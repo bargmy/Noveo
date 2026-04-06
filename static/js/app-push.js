@@ -26,9 +26,9 @@ class PushNotificationManager {
 
     static getNotificationIcon() {
         if (!this._iconPath) {
-            this._iconPath = '/ic_launcher.png';
+            this._iconPath = '/Noveo/ic_launcher.png';
             const probe = new Image();
-            probe.onerror = () => { this._iconPath = '/icon.png'; };
+            probe.onerror = () => { this._iconPath = '/Noveo/icon.png'; };
             probe.src = this._iconPath;
         }
         return this._iconPath;
