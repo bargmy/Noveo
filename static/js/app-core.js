@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // OLD: const SERVER_URL = "http://193.151.132.245:8443";
     
     // NEW: Point to the proxy we just set up (current domain + /api)
-    const SERVER_URL = "https://noveo.ir:8443";
+    const SERVER_URL = "https://api.noveo.bargmy.ir:8443";
 
     const resolveServerUrl = (path) => {
         if (!path || path.startsWith('http')) return path;
@@ -2718,7 +2718,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 				// Use LOCAL CORS proxy (replace with your XAMPP server address)
 				// If running on same server as the chat app, use relative path
 				// If running on different server, use absolute URL
-				const proxyUrl = `https://noveo.ir/cors-proxy.php?url=${encodeURIComponent(url)}`;
+				const proxyUrl = `https://api.noveo.bargmy.ir/cors-proxy.php?url=${encodeURIComponent(url)}`;
 				
 				const controller = new AbortController();
 				const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
@@ -6486,7 +6486,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             );
             
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsHost = "noveo.ir:8443";
+            const wsHost = "api.noveo.bargmy.ir:8443";
             const websocketUrl = `${wsProtocol}//${wsHost}/ws`;
             
             state.socket = new WebSocket(websocketUrl);
@@ -7722,7 +7722,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 			}
 			
 			try {
-				const response = await fetch('https://noveo.ir/stickers.json');
+				const response = await fetch('https://api.noveo.bargmy.ir/stickers.json');
 				if (!response.ok) throw new Error('Failed to fetch stickers');
 				const stickers = await response.json();
 				stickersCache = Array.isArray(stickers) ? stickers : [];
