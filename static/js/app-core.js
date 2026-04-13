@@ -5,6 +5,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // NEW: Point to the proxy we just set up (current domain + /api)
     const SERVER_URL = "https://noveo.ir:8443";
+    globalThis.__noveoServerUrl = SERVER_URL;
+    const ONBOARDING_STORAGE_KEY = 'messenger_onboarding_seen_v1';
+    const EMOJI_MODE_STORAGE_KEY = 'messenger_emoji_mode';
+    const EMOJI_PREFETCH_CACHE_KEY = 'messenger_ios_emoji_prefetch_v1';
+    const IOS_EMOJI_MANIFEST_URL = '/static/emoji/emoji_pretty.json';
+    const IOS_EMOJI_TEXTURE_BASE = '/static/emoji/emojis/';
 
     const resolveServerUrl = (path) => {
         if (!path || path.startsWith('http')) return path;
@@ -15,8 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const state = {
             socket: null, currentUser: null, currentChat: null, allUsers: {}, allChats: {},
             typingUsers: {}, dom: {},
-            isReconnecting: false, reconnectAttempts: 0, pendingRecipientId: null,
-            messagePages: {}, isLoadingMore: false, attachedFile: null, attachedFileChatId: null, replyingToMessage: null,
+            isReconnecting: false, reconnectAttempts: 0, reconnectTimer: null, pendingRecipientId: null,
+            messagePages: {}, chatHistoryState: {}, isLoadingMore: false, attachedFile: null, attachedFileChatId: null, replyingToMessage: null,
             composerUpload: { requestId: '', chatId: null, percent: 0 },
             chatScrollPositions: {},
             messageToForward: null,
@@ -31,14 +37,16 @@ document.addEventListener('DOMContentLoaded', () => {
             connectingVoiceChatId: null,
             voiceConnectionState: 'idle',
             currentScreenShareOwnerId: null,
+            availableScreenShareOwnerIds: [],
             isLocalScreenSharing: false,
             isVoiceMuted: false,
             isVoiceDeafened: false,
             isCallStageMinimized: false,
+            preferredScreenShareQuality: '480p',
             incomingCallData: null, // { chatId, callerId, chatName, callerName, callerAvatar }
             speakingTimers: {},
             // MODIFIED: Added current app version
-            currentAppVersion: '1.11.0',
+            currentAppVersion: '1.11.1',
             sessionToken: null,
             sessionExpiresAt: 0,
             e2eeSessions: {},
@@ -52,16 +60,45 @@ document.addEventListener('DOMContentLoaded', () => {
             settingsProfileEditing: false,
             contactIds: new Set(),
             chatSettingsProfiles: {},
+            historyLoadSuppressedUntil: 0,
             publicSearchResults: [],
+            chatSearchResults: [],
+            pendingMessageContextRequests: {},
+            sidebarSearchMode: 'public',
+            sidebarSearchChatId: null,
             isSidebarSearchActive: false,
             sidebarSearchQuery: '',
             walletSection: 'main',
             authResyncAttempts: 0,
             suppressScrollSaveUntil: 0,
+            pendingSearchJump: null,
             activeThemePreset: '',
+            currentEmojiMode: 'default',
+            emojiRenderMap: new Map(),
+            emojiRenderPattern: null,
+            emojiManifestPromise: null,
+            emojiPrefetchStarted: false,
+            emojiPrefetchDone: 0,
+            emojiPrefetchTotal: 0,
+            emojiToastHideTimer: null,
+            emojiObserver: null,
+            emojiObserverBusy: false,
             currentLanguage: 'en',
+            onboardingIndex: 0,
+            onboardingAnimating: false,
+            onboardingSwipeStartX: null,
             i18n: {},
             mutedUserIds: new Set(),
+            mutedChatIds: new Set(),
+            premiumReceiptFile: null,
+            subscriptionModalTier: 'premium',
+            subscriptionModalAction: '',
+            subscriptionModalSource: '',
+            premiumStarPickerSource: 'stickers',
+            premiumStarPickerSelection: null,
+            captchaPromise: null,
+            emailViewerContext: null,
+            emailComposeContext: null,
             avatarEditor: {
                 file: null,
                 image: null,
@@ -97,16 +134,55 @@ document.addEventListener('DOMContentLoaded', () => {
             Boolean(state.attachedFile && state.attachedFileChatId && chatId === state.attachedFileChatId)
         );
         const MESSAGES_PER_PAGE = 50;
+        const INITIAL_MESSAGE_BATCH = 20;
         const MAX_FILE_SIZE = 100 * 1024 * 1024;
         const REPORT_ACTION_LIMIT = 5;
         const REPORT_ACTION_WINDOW_MS = 60 * 1000;
         const PROFILE_BIO_MAX_LENGTH = 280;
         const TGS_VISIBILITY_ROOT_MARGIN = '200px 0px';
         const CHAT_SCROLL_BOTTOM_THRESHOLD = 32;
+        const ACTIVE_CHAT_MESSAGE_LIMIT = 300;
+        const INACTIVE_CHAT_MESSAGE_LIMIT = 60;
+        const premiumPreviewState = {
+            initialized: false,
+            failed: false,
+            renderer: null,
+            scene: null,
+            camera: null,
+            mesh: null,
+            material: null,
+            frameHandle: 0,
+            activeCanvas: null,
+            dragging: false,
+            pointerId: null,
+            lastX: 0,
+            lastY: 0,
+            currentX: 0,
+            currentY: 0,
+            targetX: 0,
+            targetY: 0,
+            baseX: -0.22,
+            baseY: 0.02,
+            particlesCanvas: null,
+            particlesCtx: null,
+            particles: [],
+            lastFrameTs: 0,
+            lastRenderTs: 0,
+            interactionBound: false
+        };
         const CLIENT_CHANGELOG = [
             {
-                version: '1.11.0',
+                version: '1.11.1',
                 dateKey: 'changelog.current',
+                changeKeys: [
+                    'changelog.v11101_1',
+                    'changelog.v11101_2',
+                    'changelog.v11101_3'
+                ]
+            },
+            {
+                version: '1.11.0',
+                dateKey: 'changelog.recent',
                 changeKeys: [
                     'changelog.v11100_1',
                     'changelog.v11100_2',
@@ -596,7 +672,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const SHARED_SESSION_STORAGE_KEY = 'messenger_shared_session';
         const THEME_PRESET_STORAGE_KEY = 'messenger_theme_preset';
         const LANGUAGE_STORAGE_KEY = 'messenger_language';
-const LANGUAGE_VERSION_TAG = '20260406_60';
+const LANGUAGE_VERSION_TAG = '20260412_2';
         const PASSWORD_MIN_LENGTH = 4;
         const LOCAL_STICKERS_STORAGE_KEY = 'noveo_local_stickers_v1';
         let errorToastTimer = null;
@@ -610,6 +686,16 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             ru: 'ru-RU',
             zh: 'zh-CN'
         };
+        const PROFILE_FONT_OPTIONS = [
+            { value: '', preview: 'Default' },
+            { value: '8514oem', preview: 'OEM' },
+            { value: 'bradhitc', preview: 'Bradley' },
+            { value: 'coure', preview: 'Courier' },
+            { value: 'freescpt', preview: 'Script' },
+            { value: 'f_majik', preview: 'مجیک' },
+            { value: 'impact', preview: 'Impact' },
+            { value: 'npidivani', preview: 'Divani' },
+        ];
 
         const THEME_PRESETS = {};
         let tgsVisibilityObserver = null;
@@ -727,6 +813,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         function restoreChatScrollPosition(chatId) {
             const container = state.dom.messagesContainer;
             if (!chatId || !container) return;
+            state.historyLoadSuppressedUntil = Date.now() + 450;
             const savedPosition = state.chatScrollPositions[chatId];
             if (!savedPosition) {
                 container.scrollTop = container.scrollHeight;
@@ -778,6 +865,10 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             if (value.startsWith('ru')) return 'ru';
             if (value.startsWith('zh')) return 'zh';
             return 'en';
+        }
+
+        function normalizeEmojiMode(rawValue = '') {
+            return String(rawValue || '').trim().toLowerCase() === 'ios' ? 'ios' : 'default';
         }
 
         function resolvePreferredLanguage() {
@@ -883,6 +974,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             if (state.dom.settingsLanguageSelect) {
                 state.dom.settingsLanguageSelect.value = state.currentLanguage;
             }
+            if (state.dom.settingsEmojiSelect) {
+                state.dom.settingsEmojiSelect.value = state.currentEmojiMode || 'default';
+            }
             if (state.dom.settingsProfileStatus) {
                 state.dom.settingsProfileStatus.textContent = t('settings.yourProfile', 'Your profile');
             }
@@ -987,6 +1081,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             if (!chatId || state.currentChat?.chatId !== chatId || !state.dom.messagesContainer) return;
             delete state.chatScrollPositions[chatId];
             state.suppressScrollSaveUntil = Date.now() + 250;
+            state.historyLoadSuppressedUntil = Date.now() + 450;
             state.dom.messagesContainer.scrollTop = state.dom.messagesContainer.scrollHeight;
             requestAnimationFrame(() => {
                 if (state.currentChat?.chatId !== chatId) return;
@@ -1002,6 +1097,12 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             if (!chatId || state.currentChat?.chatId !== chatId) return;
             hideChatLoadingSpinner();
             state.dom.messagesContainer.classList.remove('chat-initial-loading');
+            state.historyLoadSuppressedUntil = Date.now() + 350;
+            const pendingJump = state.pendingSearchJump;
+            if (pendingJump?.chatId === chatId && Date.now() < Number(pendingJump.until || 0)) {
+                state.isLoadingMore = false;
+                return;
+            }
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
                     if (state.currentChat?.chatId !== chatId) return;
@@ -1339,8 +1440,333 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     '--icon-muted': '#a3a3a3',
                     '--icon-soft': '#737373'
                 })
+            },
+            'sunset-shimmer': {
+                name: 'Sunset Shimmer',
+                requiredTier: 'silver',
+                css: buildThemeCss({
+                    '--app-bg': '#180b07',
+                    '--surface-1': '#21110b',
+                    '--surface-2': '#2f170d',
+                    '--surface-3': '#4a2311',
+                    '--surface-4': '#6a3412',
+                    '--border-color': '#7c2d12',
+                    '--border-strong': '#fb923c',
+                    '--text-primary': '#fff7ed',
+                    '--text-secondary': '#fed7aa',
+                    '--text-muted': '#fdba74',
+                    '--text-soft': '#fb923c',
+                    '--accent': '#f97316',
+                    '--accent-hover': '#ea580c',
+                    '--accent-contrast': '#fff7ed',
+                    '--success': '#34d399',
+                    '--success-hover': '#10b981',
+                    '--danger': '#fb7185',
+                    '--danger-hover': '#f43f5e',
+                    '--warning': '#fbbf24',
+                    '--warning-hover': '#f59e0b',
+                    '--warning-soft': '#3a1b0e',
+                    '--input-bg': 'rgba(58, 27, 14, 0.85)',
+                    '--input-border': '#9a3412',
+                    '--chat-bg': '#1b0e08',
+                    '--scrollbar-track': '#2b140b',
+                    '--scrollbar-thumb': '#ea580c',
+                    '--overlay-bg': 'rgba(24, 11, 7, 0.82)',
+                    '--chip-bg': '#4a2311',
+                    '--chip-text': '#fed7aa',
+                    '--message-incoming-bg': '#34180d',
+                    '--message-incoming-text': '#fff7ed',
+                    '--message-meta': '#fdba74',
+                    '--message-meta-soft': '#fb923c',
+                    '--message-action-bg': 'rgba(33, 17, 11, 0.94)',
+                    '--message-action-icon': '#fed7aa',
+                    '--surface-elevated': '#2a140c',
+                    '--surface-hero': 'linear-gradient(135deg, rgba(124, 45, 18, 0.9), rgba(33, 17, 11, 0.98))',
+                    '--shadow-color': 'rgba(124, 45, 18, 0.28)',
+                    '--selection-bg': '#4a2311',
+                    '--selection-ring': '#fdba74',
+                    '--alert-warning-bg': '#3d220f',
+                    '--alert-warning-text': '#fde68a',
+                    '--alert-danger-bg': '#43161c',
+                    '--alert-danger-text': '#fecdd3',
+                    '--interactive-hover': '#3a1b0e',
+                    '--interactive-active': '#4a2311',
+                    '--icon-muted': '#fdba74',
+                    '--icon-soft': '#fb923c'
+                })
+            },
+            'cherry-red': {
+                name: 'Cherry Red',
+                requiredTier: 'silver',
+                css: buildThemeCss({
+                    '--app-bg': '#1a1a1a',
+                    '--surface-1': '#2c2c2c',
+                    '--surface-2': '#212121',
+                    '--surface-3': '#333333',
+                    '--surface-4': '#444444',
+                    '--border-color': '#333333',
+                    '--border-strong': '#666666',
+                    '--text-primary': '#ffffff',
+                    '--text-secondary': '#e0e0e0',
+                    '--text-muted': '#b0b0b0',
+                    '--text-soft': '#ff2c55',
+                    '--accent': '#d2042d',
+                    '--accent-hover': '#ff2c55',
+                    '--accent-contrast': '#ffffff',
+                    '--success': '#34d399',
+                    '--success-hover': '#10b981',
+                    '--danger': '#fb7185',
+                    '--danger-hover': '#f43f5e',
+                    '--warning': '#ff2c55',
+                    '--warning-hover': '#d2042d',
+                    '--warning-soft': '#330000',
+                    '--input-bg': '#333333',
+                    '--input-border': '#555555',
+                    '--chat-bg': '#1a1a1a',
+                    '--scrollbar-track': '#2c2c2c',
+                    '--scrollbar-thumb': '#555555',
+                    '--overlay-bg': 'rgba(26, 26, 26, 0.82)',
+                    '--chip-bg': '#4d0000',
+                    '--chip-text': '#ffffff',
+                    '--message-incoming-bg': '#333333',
+                    '--message-incoming-text': '#e0e0e0',
+                    '--message-meta': '#b0b0b0',
+                    '--message-meta-soft': '#ff2c55',
+                    '--message-action-bg': 'rgba(51, 51, 51, 0.94)',
+                    '--message-action-icon': '#d0d0d0',
+                    '--surface-elevated': '#2c2c2c',
+                    '--surface-hero': 'linear-gradient(135deg, rgba(77, 0, 0, 0.94), rgba(210, 4, 45, 0.9), rgba(51, 0, 0, 0.96), rgba(255, 44, 85, 0.9))',
+                    '--shadow-color': 'rgba(210, 4, 45, 0.24)',
+                    '--selection-bg': '#4d0000',
+                    '--selection-ring': '#ff2c55',
+                    '--alert-warning-bg': '#330000',
+                    '--alert-warning-text': '#ffe4e6',
+                    '--alert-danger-bg': '#4d0000',
+                    '--alert-danger-text': '#ffffff',
+                    '--interactive-hover': '#2a2a2a',
+                    '--interactive-active': '#4d0000',
+                    '--icon-muted': '#d0d0d0',
+                    '--icon-soft': '#ff2c55'
+                })
+            },
+            'snowy-daydream': {
+                name: 'Snowy Daydream',
+                premiumOnly: true,
+                css: buildThemeCss({
+                    '--app-bg': '#f1f7ff',
+                    '--surface-1': 'rgba(255, 255, 255, 0.86)',
+                    '--surface-2': 'rgba(240, 248, 255, 0.84)',
+                    '--surface-3': 'rgba(221, 236, 255, 0.9)',
+                    '--surface-4': 'rgba(191, 219, 254, 0.92)',
+                    '--border-color': '#bfdbfe',
+                    '--border-strong': '#7dd3fc',
+                    '--text-primary': '#102041',
+                    '--text-secondary': '#31538a',
+                    '--text-muted': '#4c6a97',
+                    '--text-soft': '#7b94b8',
+                    '--accent': '#3b82f6',
+                    '--accent-hover': '#2563eb',
+                    '--accent-contrast': '#ffffff',
+                    '--success': '#0f9d7a',
+                    '--success-hover': '#0c7c61',
+                    '--danger': '#dc2626',
+                    '--danger-hover': '#b91c1c',
+                    '--warning': '#d97706',
+                    '--warning-hover': '#b45309',
+                    '--warning-soft': '#fff7ed',
+                    '--input-bg': 'rgba(255, 255, 255, 0.88)',
+                    '--input-border': '#93c5fd',
+                    '--chat-bg': '#edf6ff',
+                    '--scrollbar-track': '#dbeafe',
+                    '--scrollbar-thumb': '#93c5fd',
+                    '--overlay-bg': 'rgba(113, 148, 189, 0.36)',
+                    '--chip-bg': 'rgba(255, 255, 255, 0.82)',
+                    '--chip-text': '#31538a',
+                    '--message-incoming-bg': 'rgba(255, 255, 255, 0.95)',
+                    '--message-incoming-text': '#102041',
+                    '--message-meta': '#4c6a97',
+                    '--message-meta-soft': '#7b94b8',
+                    '--message-action-bg': 'rgba(255, 255, 255, 0.96)',
+                    '--message-action-icon': '#31538a',
+                    '--surface-elevated': 'rgba(255, 255, 255, 0.92)',
+                    '--surface-hero': 'linear-gradient(135deg, rgba(255,255,255,0.96), rgba(219,234,254,0.92))',
+                    '--shadow-color': 'rgba(96, 165, 250, 0.16)',
+                    '--selection-bg': 'rgba(191, 219, 254, 0.9)',
+                    '--selection-ring': '#60a5fa',
+                    '--alert-warning-bg': '#fff7ed',
+                    '--alert-warning-text': '#9a3412',
+                    '--alert-danger-bg': '#fef2f2',
+                    '--alert-danger-text': '#991b1b',
+                    '--interactive-hover': 'rgba(219, 234, 254, 0.9)',
+                    '--interactive-active': 'rgba(191, 219, 254, 0.95)',
+                    '--icon-muted': '#4c6a97',
+                    '--icon-soft': '#7b94b8'
+                })
+            },
+            'rainbow-ragebait': {
+                name: 'Rainbow Ragebait',
+                premiumOnly: true,
+                css: buildThemeCss({
+                    '--app-bg': '#130a20',
+                    '--surface-1': '#1d1130',
+                    '--surface-2': '#25163d',
+                    '--surface-3': '#331d52',
+                    '--surface-4': '#4b2572',
+                    '--border-color': '#5b2d83',
+                    '--border-strong': '#c084fc',
+                    '--text-primary': '#fff7ff',
+                    '--text-secondary': '#f5d0fe',
+                    '--text-muted': '#e9d5ff',
+                    '--text-soft': '#d8b4fe',
+                    '--accent': '#ff4fd8',
+                    '--accent-hover': '#ff8a00',
+                    '--accent-contrast': '#ffffff',
+                    '--success': '#22c55e',
+                    '--success-hover': '#16a34a',
+                    '--danger': '#fb7185',
+                    '--danger-hover': '#f43f5e',
+                    '--warning': '#fbbf24',
+                    '--warning-hover': '#f59e0b',
+                    '--warning-soft': '#2f1747',
+                    '--input-bg': '#24133b',
+                    '--input-border': '#7c3aed',
+                    '--chat-bg': '#1a0f2d',
+                    '--scrollbar-track': '#24133b',
+                    '--scrollbar-thumb': '#c084fc',
+                    '--overlay-bg': 'rgba(19, 10, 32, 0.82)',
+                    '--chip-bg': '#311a4d',
+                    '--chip-text': '#f5d0fe',
+                    '--message-incoming-bg': '#24133b',
+                    '--message-incoming-text': '#fff7ff',
+                    '--message-meta': '#e9d5ff',
+                    '--message-meta-soft': '#d8b4fe',
+                    '--message-action-bg': 'rgba(29, 17, 48, 0.92)',
+                    '--message-action-icon': '#f5d0fe',
+                    '--surface-elevated': '#24133b',
+                    '--surface-hero': 'linear-gradient(135deg, rgba(124,58,237,0.78), rgba(29,17,48,0.98))',
+                    '--shadow-color': 'rgba(131, 56, 236, 0.22)',
+                    '--selection-bg': '#4b2572',
+                    '--selection-ring': '#f9a8d4',
+                    '--alert-warning-bg': '#3d1d4d',
+                    '--alert-warning-text': '#fde68a',
+                    '--alert-danger-bg': '#421833',
+                    '--alert-danger-text': '#fecdd3',
+                    '--interactive-hover': '#311a4d',
+                    '--interactive-active': '#4b2572',
+                    '--icon-muted': '#e9d5ff',
+                    '--icon-soft': '#d8b4fe'
+                })
+            },
+            'sanoki-meoa': {
+                name: 'Sanoki Meoa',
+                premiumOnly: true,
+                css: buildThemeCss({
+                    '--app-bg': '#12051e',
+                    '--surface-1': '#1a0a2b',
+                    '--surface-2': '#26103d',
+                    '--surface-3': '#39145c',
+                    '--surface-4': '#5b21b6',
+                    '--border-color': '#6d28d9',
+                    '--border-strong': '#c084fc',
+                    '--text-primary': '#faf5ff',
+                    '--text-secondary': '#f3e8ff',
+                    '--text-muted': '#d8b4fe',
+                    '--text-soft': '#c084fc',
+                    '--accent': '#a855f7',
+                    '--accent-hover': '#9333ea',
+                    '--accent-contrast': '#ffffff',
+                    '--success': '#34d399',
+                    '--success-hover': '#10b981',
+                    '--danger': '#fb7185',
+                    '--danger-hover': '#f43f5e',
+                    '--warning': '#fbbf24',
+                    '--warning-hover': '#f59e0b',
+                    '--warning-soft': '#2a1245',
+                    '--input-bg': '#210c33',
+                    '--input-border': '#7e22ce',
+                    '--chat-bg': '#180827',
+                    '--scrollbar-track': '#210c33',
+                    '--scrollbar-thumb': '#9333ea',
+                    '--overlay-bg': 'rgba(18, 5, 30, 0.84)',
+                    '--chip-bg': '#2b1046',
+                    '--chip-text': '#f3e8ff',
+                    '--message-incoming-bg': '#241038',
+                    '--message-incoming-text': '#faf5ff',
+                    '--message-meta': '#d8b4fe',
+                    '--message-meta-soft': '#c084fc',
+                    '--message-action-bg': 'rgba(26, 10, 43, 0.94)',
+                    '--message-action-icon': '#f3e8ff',
+                    '--surface-elevated': '#210c33',
+                    '--surface-hero': 'linear-gradient(135deg, rgba(91,33,182,0.82), rgba(18,5,30,0.98))',
+                    '--shadow-color': 'rgba(76, 29, 149, 0.24)',
+                    '--selection-bg': '#3b1760',
+                    '--selection-ring': '#d8b4fe',
+                    '--alert-warning-bg': '#34174d',
+                    '--alert-warning-text': '#fde68a',
+                    '--alert-danger-bg': '#421833',
+                    '--alert-danger-text': '#fecdd3',
+                    '--interactive-hover': '#2b1046',
+                    '--interactive-active': '#3b1760',
+                    '--icon-muted': '#d8b4fe',
+                    '--icon-soft': '#c084fc'
+                })
             }
         });
+
+        function getMembershipTierRank(tier = '') {
+            const normalized = String(tier || '').toLowerCase();
+            if (normalized === 'premium') return 2;
+            if (normalized === 'silver') return 1;
+            return 0;
+        }
+
+        function resolveBestMembershipTier(...tiers) {
+            return tiers
+                .map((tier) => String(tier || '').trim().toLowerCase())
+                .reduce((bestTier, tier) => (getMembershipTierRank(tier) > getMembershipTierRank(bestTier) ? tier : bestTier), '');
+        }
+
+        function getCurrentViewerMembershipTier() {
+            const currentUserId = state.currentUser?.userId;
+            const currentUserRecord = currentUserId ? state.allUsers[currentUserId] : null;
+            return resolveBestMembershipTier(state.currentUser?.membershipTier, currentUserRecord?.membershipTier);
+        }
+
+        function hasPremiumAccess() {
+            return getMembershipTierRank(getCurrentViewerMembershipTier()) >= 2;
+        }
+
+        function hasSilverAccess() {
+            return getMembershipTierRank(getCurrentViewerMembershipTier()) >= 1;
+        }
+
+        function isPremiumThemePreset(presetId = '') {
+            const preset = THEME_PRESETS[presetId] || {};
+            return Boolean(preset.premiumOnly) || String(preset.requiredTier || '').toLowerCase() === 'premium';
+        }
+
+        function isSilverThemePreset(presetId = '') {
+            return String(THEME_PRESETS[presetId]?.requiredTier || '').toLowerCase() === 'silver';
+        }
+
+        function getThemePresetRequiredTier(presetId = '') {
+            const preset = THEME_PRESETS[presetId] || {};
+            if (preset.premiumOnly) return 'premium';
+            return String(preset.requiredTier || '').toLowerCase();
+        }
+
+        function canUseThemePreset(presetId = '') {
+            const requiredTier = getThemePresetRequiredTier(presetId);
+            if (!requiredTier) return true;
+            if (!state.currentUser) return true;
+            return getMembershipTierRank(state.currentUser?.membershipTier) >= getMembershipTierRank(requiredTier);
+        }
+
+        function isThemePresetAllowedForTier(presetId = '', tier = '') {
+            const requiredTier = getThemePresetRequiredTier(presetId);
+            if (!requiredTier) return true;
+            return getMembershipTierRank(tier) >= getMembershipTierRank(requiredTier);
+        }
 
         function getDynamicThemeStyleEl() {
             let styleEl = document.getElementById('dynamic-theme-style');
@@ -1355,6 +1781,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         function renderThemePresetSelection() {
             document.querySelectorAll('[data-theme-preset]').forEach((button) => {
                 button.classList.toggle('is-active', button.dataset.themePreset === state.activeThemePreset);
+                const presetId = button.dataset.themePreset || '';
+                const locked = !canUseThemePreset(presetId);
+                button.classList.toggle('is-locked', locked);
             });
             const themeSummary = state.dom?.themePresetSummary;
             if (themeSummary) {
@@ -1461,7 +1890,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             const nextActive = Boolean(isActive);
             const skipListRestore = Boolean(options.skipListRestore);
             const onDone = typeof options.onDone === 'function' ? options.onDone : null;
-            if (state.sidebarSearchTransitioning || nextActive === state.isSidebarSearchActive) return;
+            const nextMode = options.mode || state.sidebarSearchMode || 'public';
+            const nextChatId = Object.prototype.hasOwnProperty.call(options, 'chatId') ? options.chatId : state.sidebarSearchChatId;
+            if (state.sidebarSearchTransitioning || (nextActive === state.isSidebarSearchActive && (!nextActive || (nextMode === state.sidebarSearchMode && nextChatId === state.sidebarSearchChatId)))) return;
             const titleEl = state.dom.sidebarTitle;
             const searchBar = state.dom.sidebarSearchBar;
             state.sidebarSearchTransitioning = true;
@@ -1476,6 +1907,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 if (!nextActive) {
                     state.sidebarSearchQuery = '';
                     state.publicSearchResults = [];
+                    state.chatSearchResults = [];
+                    state.sidebarSearchMode = 'public';
+                    state.sidebarSearchChatId = null;
                     if (state.dom.sidebarSearchInput) state.dom.sidebarSearchInput.value = '';
                     if (!skipListRestore && state.isFullyAuthenticated) {
                         prepareSidebarListForEnter();
@@ -1485,12 +1919,23 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     if (onDone) window.setTimeout(onDone, skipListRestore ? 0 : 110);
                     return;
                 }
+                state.sidebarSearchMode = nextMode;
+                state.sidebarSearchChatId = nextMode === 'chat' ? nextChatId : null;
                 prepareSidebarListForEnter();
-                renderSidebarSearchResults(state.sidebarSearchQuery, state.publicSearchResults);
+                renderSidebarSearchResults(
+                    state.sidebarSearchQuery,
+                    nextMode === 'chat' ? state.chatSearchResults : state.publicSearchResults,
+                    nextMode
+                );
                 applySidebarListEnterAnimation();
                 if (onDone) window.setTimeout(onDone, 110);
             });
             if (nextActive) {
+                if (state.dom.sidebarSearchInput) {
+                    state.dom.sidebarSearchInput.placeholder = nextMode === 'chat'
+                        ? t('menu.searchMessages', 'Search messages')
+                        : t('menu.searchPublic', 'Search public handles');
+                }
                 searchBar?.classList.remove('hidden', 'sidebar-header-hidden');
                 titleEl?.classList.remove('hidden', 'sidebar-header-hidden');
                 restartElementAnimation(searchBar, 'sidebar-header-swap-in', ['sidebar-header-swap-in', 'sidebar-header-swap-out']);
@@ -1517,10 +1962,149 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             }, 210);
         }
 
-        function renderSidebarSearchResults(query = '', remoteResults = []) {
+        function closeSidebarSearchForNavigation(onDone) {
+            if (window.innerWidth < 768) {
+                if (state.sidebarSearchTimer) {
+                    clearTimeout(state.sidebarSearchTimer);
+                    state.sidebarSearchTimer = null;
+                }
+                state.sidebarSearchTransitioning = false;
+                state.sidebarSearchRequestId = Number(state.sidebarSearchRequestId || 0) + 1;
+                state.isSidebarSearchActive = false;
+                state.sidebarSearchQuery = '';
+                state.publicSearchResults = [];
+                state.chatSearchResults = [];
+                state.sidebarSearchMode = 'public';
+                state.sidebarSearchChatId = null;
+                if (state.dom.sidebarSearchInput) {
+                    state.dom.sidebarSearchInput.value = '';
+                }
+                state.dom.sidebarTitle?.classList.remove('hidden', 'sidebar-header-hidden', 'sidebar-header-swap-in', 'sidebar-header-swap-out');
+                state.dom.sidebarSearchBar?.classList.add('hidden', 'sidebar-header-hidden');
+                state.dom.sidebarSearchBar?.classList.remove('sidebar-header-swap-in', 'sidebar-header-swap-out');
+                if (state.dom.createChannelButton) {
+                    state.dom.createChannelButton.innerHTML = '<span class="sidebar-search-toggle-icon"><i class="fas fa-search"></i></span>';
+                    state.dom.createChannelButton.title = t('common.search', 'Search');
+                    state.dom.createChannelButton.classList.remove('sidebar-icon-swap-in', 'sidebar-icon-swap-out');
+                }
+                onDone?.();
+                return;
+            }
+            setSidebarSearchActive(false, {
+                skipListRestore: false,
+                onDone
+            });
+        }
+
+        function forceMobilePaneState(mode, options = {}) {
+            if (window.innerWidth >= 768) return;
+            const sidebarEl = state.dom.sidebar;
+            const chatWindowEl = state.dom.chatWindow;
+            if (!sidebarEl || !chatWindowEl) return;
+            const immediate = Boolean(options.immediate);
+            const applyState = () => {
+                state.dom.mainApp?.classList.toggle('chat-view-active', mode === 'chat');
+                if (mode === 'chat') {
+                    sidebarEl.style.transform = 'translateX(-100%)';
+                    chatWindowEl.style.transform = 'translateX(0)';
+                } else {
+                    sidebarEl.style.transform = '';
+                    chatWindowEl.style.transform = '';
+                }
+            };
+            if (!immediate) {
+                applyState();
+                return;
+            }
+            const prevSidebarTransition = sidebarEl.style.transition;
+            const prevChatTransition = chatWindowEl.style.transition;
+            sidebarEl.style.transition = 'none';
+            chatWindowEl.style.transition = 'none';
+            applyState();
+            void sidebarEl.offsetWidth;
+            void chatWindowEl.offsetWidth;
+            sidebarEl.style.transition = prevSidebarTransition;
+            chatWindowEl.style.transition = prevChatTransition;
+        }
+
+        function renderSidebarSearchResults(query = '', remoteResults = [], mode = state.sidebarSearchMode || 'public') {
             const list = state.dom.contactsList;
             if (!list) return;
             const normalized = String(query || '').trim().toLowerCase();
+            if (mode === 'chat') {
+                const chatResults = Array.isArray(remoteResults) ? remoteResults : [];
+                list.innerHTML = '';
+                if (!chatResults.length) {
+                    const emptyRow = document.createElement('div');
+                    emptyRow.className = 'p-6 text-center app-text-muted';
+                    emptyRow.dataset.sidebarKey = normalized ? 'empty-chat-search' : 'empty-chat-search-idle';
+                    emptyRow.textContent = normalized
+                        ? t('common.noResults', 'No results found.')
+                        : t('menu.searchMessages', 'Search messages');
+                    list.appendChild(emptyRow);
+                    return;
+                }
+                chatResults.forEach((message) => {
+                    const targetChatId = state.sidebarSearchChatId;
+                    const targetMessageId = message.messageId;
+                    const sender = state.allUsers[message.senderId] || {};
+                    const name = getUserDisplayName(sender, message.senderId || t('common.unknown', 'Unknown'));
+                    const avatar = generateAvatar(name, message.senderId, sender.avatarUrl);
+                    const snippet = String(message?.text || message?.file?.name || '').trim() || t('message.unknownMessage', 'Unknown message');
+                    const row = document.createElement('button');
+                    row.type = 'button';
+                    row.className = 'app-list-row app-list-row-hover w-full border-b p-3 text-left flex items-center gap-3';
+                    row.dataset.sidebarKey = `message:${message.messageId}`;
+                    row.innerHTML = `
+                        <div class="w-11 h-11 avatar-circle flex-shrink-0" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>
+                        <div class="min-w-0 flex-1">
+                            <div class="text-sm font-semibold truncate">${escapeHtml(name)}</div>
+                            <div class="text-xs app-text-muted truncate mt-1">${escapeHtml(snippet)}</div>
+                        </div>
+                    `;
+                    row.addEventListener('click', () => {
+                        const openResult = async () => {
+                            const targetChat = state.allChats[targetChatId];
+                            if (!targetChat) return;
+                            let requiresRenderWait = false;
+                            if (window.innerWidth < 768) {
+                                forceMobilePaneState('chat', { immediate: true });
+                            }
+                            if (state.currentChat?.chatId !== targetChat.chatId) {
+                                state.pendingSearchJump = { chatId: targetChat.chatId, until: Date.now() + 2500 };
+                                openChat(targetChat);
+                                requiresRenderWait = true;
+                            }
+                            if (!targetChat.messages?.some((entry) => String(entry.messageId) === String(targetMessageId))) {
+                                const contextPayload = await requestMessageContext(targetChat.chatId, targetMessageId);
+                                if (contextPayload?.messages?.length) {
+                                    targetChat.messages = normalizeMessages([
+                                        ...(Array.isArray(targetChat.messages) ? targetChat.messages : []),
+                                        ...contextPayload.messages
+                                    ]);
+                                    state.pendingSearchJump = { chatId: targetChat.chatId, until: Date.now() + 2500 };
+                                    openChat(targetChat);
+                                    requiresRenderWait = true;
+                                }
+                            }
+                            if (requiresRenderWait) {
+                                await waitForChatRenderCycle();
+                            }
+                            const didScroll = await scrollToMessage(targetMessageId, { suppressError: true });
+                            state.pendingSearchJump = null;
+                            if (!didScroll) {
+                                showSuccessModal(
+                                    t('chat.timelineNotLoadedTitle', 'Timeline Not Loaded'),
+                                    t('chat.timelineNotLoadedBody', 'Scroll up to render this part of the timeline first.')
+                                );
+                            }
+                        };
+                        closeSidebarSearchForNavigation(openResult);
+                    });
+                    list.appendChild(row);
+                });
+                return;
+            }
             const localResults = [];
             const seen = new Set();
 
@@ -1578,9 +2162,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 row.className = 'app-list-row app-list-row-hover w-full border-b p-3 text-left flex items-center gap-3';
                 row.dataset.sidebarKey = isUser ? `user:${entry.userId}` : `chat:${entry.chatId}`;
                 row.innerHTML = `
-                    <div class="w-12 h-12 avatar-circle flex-shrink-0 ${entry.chatType === 'channel' ? 'rounded-md' : ''}" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>
+                    <div class="w-12 h-12 avatar-circle flex-shrink-0" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>
                     <div class="min-w-0 flex-1">
-                        <div class="font-semibold truncate">${isUser ? renderDisplayName(name, Boolean(entry.isVerified), Boolean(entry.isBot)) : renderPlainDisplayName(name, Boolean(entry.isVerified))}</div>
+                        <div class="font-semibold truncate">${isUser ? renderDisplayName(name, Boolean(entry.isVerified), Boolean(entry.isBot), entry.membershipTier, entry.nicknameFont, entry.premiumStarIcon) : renderPlainDisplayName(name, Boolean(entry.isVerified))}</div>
                         <div class="text-xs app-text-muted truncate">${escapeHtml(handle || (isUser ? getPresenceLabel(entry) : (entry.chatType || 'chat')))}</div>
                     </div>
                 `;
@@ -1599,7 +2183,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                             openChat(state.allChats[entry.chatId]);
                         }
                     };
-                    setSidebarSearchActive(false, { onDone: openResult });
+                    closeSidebarSearchForNavigation(openResult);
                 });
                 list.appendChild(row);
             });
@@ -1607,12 +2191,20 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 
         function applyThemeCss(cssText, persist = true, presetId = '') {
             const normalizedPresetId = presetId && THEME_PRESETS[presetId] ? presetId : '';
+            if (normalizedPresetId && !canUseThemePreset(normalizedPresetId)) {
+                resetThemeCss();
+                openPremiumModal();
+                return;
+            }
             const css = normalizedPresetId
                 ? String(THEME_PRESETS[normalizedPresetId].css || '')
                 : String(cssText || '');
             const styleEl = getDynamicThemeStyleEl();
             styleEl.textContent = css;
             state.activeThemePreset = normalizedPresetId;
+            if (document.body) {
+                document.body.dataset.themePreset = normalizedPresetId;
+            }
             if (persist) {
                 getStorage().saveTheme(css);
                 if (normalizedPresetId) getStorage().saveThemePreset(normalizedPresetId);
@@ -1631,8 +2223,44 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             const styleEl = document.getElementById('dynamic-theme-style');
             if (styleEl) styleEl.textContent = '';
             state.activeThemePreset = '';
+            if (document.body) {
+                document.body.dataset.themePreset = '';
+            }
             getStorage().clearTheme();
             getStorage().clearThemePreset();
+            renderThemePresetSelection();
+        }
+
+        function enforcePremiumEntitlements() {
+            const currentUserId = state.currentUser?.userId;
+            const currentUser = currentUserId ? state.allUsers[currentUserId] : null;
+            const currentTier = getCurrentViewerMembershipTier();
+            if (!isThemePresetAllowedForTier(state.activeThemePreset, currentTier)) {
+                resetThemeCss();
+            }
+            if (!hasPremiumAccess()) {
+                if (currentUser?.nicknameFont) {
+                    currentUser.nicknameFont = '';
+                }
+                if (state.currentUser?.nicknameFont) {
+                    state.currentUser.nicknameFont = '';
+                }
+                if (currentUser?.profileSkin) {
+                    currentUser.profileSkin = null;
+                }
+                if (currentUser?.premiumStarIcon) {
+                    currentUser.premiumStarIcon = null;
+                }
+                if (state.currentUser?.profileSkin) {
+                    state.currentUser.profileSkin = null;
+                }
+                if (state.currentUser?.premiumStarIcon) {
+                    state.currentUser.premiumStarIcon = null;
+                }
+            }
+            if (currentUserId && currentUser && !state.dom.settingsModal?.classList.contains('hidden')) {
+                ui.populateSettingsProfile(currentUser);
+            }
             renderThemePresetSelection();
         }
 
@@ -1666,10 +2294,24 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             clearThemePreset: () => localStorage.removeItem(THEME_PRESET_STORAGE_KEY),
             saveLanguage: (languageCode) => localStorage.setItem(LANGUAGE_STORAGE_KEY, String(languageCode || 'en')),
             loadLanguage: () => localStorage.getItem(LANGUAGE_STORAGE_KEY) || '',
+            saveEmojiMode: (emojiMode) => localStorage.setItem(EMOJI_MODE_STORAGE_KEY, normalizeEmojiMode(emojiMode)),
+            loadEmojiMode: () => normalizeEmojiMode(localStorage.getItem(EMOJI_MODE_STORAGE_KEY) || 'default'),
+            saveOnboardingSeen: () => localStorage.setItem(ONBOARDING_STORAGE_KEY, '1'),
+            loadOnboardingSeen: () => localStorage.getItem(ONBOARDING_STORAGE_KEY) === '1',
             saveMutedUsers: (userIds) => localStorage.setItem('messenger_muted_users', JSON.stringify(Array.from(userIds || []))),
             loadMutedUsers: () => {
                 try {
                     const raw = localStorage.getItem('messenger_muted_users');
+                    const parsed = raw ? JSON.parse(raw) : [];
+                    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+                } catch (e) {
+                    return [];
+                }
+            },
+            saveMutedChats: (chatIds) => localStorage.setItem('messenger_muted_chats', JSON.stringify(Array.from(chatIds || []))),
+            loadMutedChats: () => {
+                try {
+                    const raw = localStorage.getItem('messenger_muted_chats');
                     const parsed = raw ? JSON.parse(raw) : [];
                     return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
                 } catch (e) {
@@ -1691,11 +2333,30 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 
         let appSoundContext = null;
         let incomingCallToneTimer = null;
+        const ONBOARDING_SLIDES = [
+            {
+                icon: `<svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><rect x="10" y="12" width="44" height="40" rx="14" fill="currentColor" opacity=".12"/><path d="M20 24h24M20 32h16M20 40h10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><circle cx="44" cy="40" r="6" fill="currentColor"/></svg>`,
+                descriptionKey: 'onboarding.slide1'
+            },
+            {
+                icon: `<svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><rect x="12" y="18" width="40" height="28" rx="8" fill="currentColor" opacity=".12"/><path d="M16 24l16 12 16-12" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 44h28" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><circle cx="48" cy="44" r="6" fill="currentColor"/></svg>`,
+                descriptionKey: 'onboarding.slide2'
+            },
+            {
+                icon: `<svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="20" cy="24" r="8" fill="currentColor" opacity=".14"/><circle cx="43" cy="22" r="6" fill="currentColor" opacity=".1"/><path d="M12 46c2-8 9-12 17-12 9 0 15 4 18 12" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><rect x="39" y="36" width="13" height="13" rx="4" fill="currentColor"/><path d="M45.5 39v7M42 42.5h7" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>`,
+                descriptionKey: 'onboarding.slide3'
+            },
+            {
+                icon: `<svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><rect x="14" y="16" width="36" height="32" rx="10" stroke="currentColor" stroke-width="4"/><path d="M24 28h16M24 36h10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M48 22l6-4v28l-6-4" fill="currentColor" opacity=".22"/><path d="M50 25l4-2.5v19L50 39" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg>`,
+                descriptionKey: 'onboarding.slide4'
+            }
+        ];
+        const APP_SOUND_VERSION = '20260408_1';
         const APP_SOUND_FILES = {
-            'incoming-call': 'static/audio/incoming-call.wav',
-            'call-denied': 'static/audio/call-denied.wav',
-            'message-sent': 'static/audio/message-sent.wav',
-            'message-received': 'static/audio/message-received.wav',
+            'incoming-call': `static/audio/incoming-call.wav?v=${APP_SOUND_VERSION}`,
+            'call-denied': `static/audio/call-denied.wav?v=${APP_SOUND_VERSION}`,
+            'message-sent': `static/audio/message-sent.wav?v=${APP_SOUND_VERSION}`,
+            'message-received': `static/audio/message-received.wav?v=${APP_SOUND_VERSION}`,
         };
         const appSoundCache = {};
 
@@ -1703,8 +2364,16 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return Boolean(userId && state.mutedUserIds.has(String(userId)));
         }
 
+        function isChatMutedLocally(chatId) {
+            return Boolean(chatId && state.mutedChatIds.has(String(chatId)));
+        }
+
         function persistMutedUsers() {
             getStorage().saveMutedUsers(state.mutedUserIds);
+        }
+
+        function persistMutedChats() {
+            getStorage().saveMutedChats(state.mutedChatIds);
         }
 
         function toggleLocalUserMute(userId) {
@@ -1714,6 +2383,15 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             else state.mutedUserIds.add(normalized);
             persistMutedUsers();
             return state.mutedUserIds.has(normalized);
+        }
+
+        function toggleLocalChatMute(chatId) {
+            const normalized = String(chatId || '').trim();
+            if (!normalized) return false;
+            if (state.mutedChatIds.has(normalized)) state.mutedChatIds.delete(normalized);
+            else state.mutedChatIds.add(normalized);
+            persistMutedChats();
+            return state.mutedChatIds.has(normalized);
         }
 
         function getSoundContext() {
@@ -1899,6 +2577,294 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return sanitizeLinkUrl(rawUrl);
         }
 
+        function escapeRegex(text) {
+            return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        function decodeEmojiCodeSequence(sequence) {
+            const parts = String(sequence || '').split('-').map((part) => part.trim()).filter(Boolean);
+            if (!parts.length) return '';
+            try {
+                return parts.map((part) => String.fromCodePoint(Number.parseInt(part, 16))).join('');
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function buildEmojiRenderMap(entries = []) {
+            const renderMap = new Map();
+            const sourceEntries = Array.isArray(entries)
+                ? entries
+                : Array.isArray(entries?.emojis)
+                ? entries.emojis
+                : Array.isArray(entries?.data)
+                ? entries.data
+                : [];
+            sourceEntries.forEach((entry) => {
+                const unified = String(entry?.unified || '').trim();
+                if (!unified) return;
+                const nonQualified = String(entry?.non_qualified || '').trim();
+                const unifiedEmoji = decodeEmojiCodeSequence(unified);
+                const nonQualifiedEmoji = decodeEmojiCodeSequence(nonQualified);
+                const primaryName = nonQualified || unified;
+                const fallbackName = primaryName === unified ? '' : unified;
+                const payload = {
+                    primarySrc: `${IOS_EMOJI_TEXTURE_BASE}${primaryName}.png`,
+                    fallbackSrc: fallbackName ? `${IOS_EMOJI_TEXTURE_BASE}${fallbackName}.png` : '',
+                };
+                if (unifiedEmoji) renderMap.set(unifiedEmoji, payload);
+                if (nonQualifiedEmoji) renderMap.set(nonQualifiedEmoji, payload);
+            });
+            const emojiKeys = Array.from(renderMap.keys()).sort((a, b) => b.length - a.length);
+            state.emojiRenderMap = renderMap;
+            state.emojiRenderPattern = emojiKeys.length ? new RegExp(emojiKeys.map(escapeRegex).join('|'), 'gu') : null;
+        }
+
+        function updateEmojiDownloadToast(doneCount = 0, totalCount = 0) {
+            if (!state.dom.emojiDownloadToast || !state.dom.emojiDownloadProgressBar || !state.dom.emojiDownloadMessage) return;
+            if (state.emojiToastHideTimer) {
+                clearTimeout(state.emojiToastHideTimer);
+                state.emojiToastHideTimer = null;
+            }
+            const safeTotal = Math.max(0, Number(totalCount || 0));
+            const safeDone = Math.max(0, Number(doneCount || 0));
+            const percent = safeTotal > 0 ? Math.min(100, Math.round((safeDone / safeTotal) * 100)) : 0;
+            state.dom.emojiDownloadToast.classList.remove('hidden');
+            state.dom.emojiDownloadProgressBar.style.width = `${percent}%`;
+            state.dom.emojiDownloadMessage.textContent = safeTotal > 0
+                ? tr('settings.emojiDownloadProgress', 'Cached {done} / {total} emoji textures', { done: safeDone, total: safeTotal })
+                : t('settings.emojiDownloadPreparing', 'Preparing emoji cache...');
+            if (safeTotal > 0 && safeDone >= safeTotal) {
+                state.dom.emojiDownloadMessage.textContent = t('settings.emojiDownloadDone', 'iOS emoji cache is ready.');
+                state.emojiToastHideTimer = window.setTimeout(() => {
+                    state.dom.emojiDownloadToast?.classList.add('hidden');
+                }, 1800);
+            }
+        }
+
+        function preloadEmojiTextures() {
+            if (state.emojiPrefetchStarted || state.currentEmojiMode !== 'ios' || !state.emojiRenderMap.size) return;
+            const cacheSignature = `${IOS_EMOJI_MANIFEST_URL}:${state.emojiRenderMap.size}`;
+            if (localStorage.getItem(EMOJI_PREFETCH_CACHE_KEY) === cacheSignature) {
+                state.emojiPrefetchStarted = true;
+                state.emojiPrefetchDone = state.emojiRenderMap.size;
+                state.emojiPrefetchTotal = state.emojiRenderMap.size;
+                return;
+            }
+            state.emojiPrefetchStarted = true;
+            const queue = Array.from(new Set(Array.from(state.emojiRenderMap.values()).flatMap((entry) => [entry.primarySrc, entry.fallbackSrc]).filter(Boolean)));
+            state.emojiPrefetchDone = 0;
+            state.emojiPrefetchTotal = queue.length;
+            updateEmojiDownloadToast(0, queue.length);
+            const concurrency = 6;
+            let index = 0;
+            const loadNext = () => {
+                if (index >= queue.length) return;
+                const url = queue[index++];
+                const img = new Image();
+                const finalize = () => {
+                    img.onload = null;
+                    img.onerror = null;
+                    state.emojiPrefetchDone += 1;
+                    updateEmojiDownloadToast(state.emojiPrefetchDone, state.emojiPrefetchTotal);
+                    if (state.emojiPrefetchDone >= state.emojiPrefetchTotal && state.emojiPrefetchTotal > 0) {
+                        localStorage.setItem(EMOJI_PREFETCH_CACHE_KEY, cacheSignature);
+                    }
+                    window.setTimeout(loadNext, 30);
+                };
+                img.onload = finalize;
+                img.onerror = finalize;
+                img.src = url;
+            };
+            if (!queue.length) {
+                updateEmojiDownloadToast(1, 1);
+                return;
+            }
+            for (let i = 0; i < Math.min(concurrency, queue.length); i += 1) {
+                loadNext();
+            }
+        }
+
+        async function ensureEmojiAssetsLoaded() {
+            if (state.currentEmojiMode !== 'ios') return;
+            if (state.emojiRenderMap.size && state.emojiRenderPattern) {
+                preloadEmojiTextures();
+                return;
+            }
+            if (!state.emojiManifestPromise) {
+                state.emojiManifestPromise = fetch(IOS_EMOJI_MANIFEST_URL, { cache: 'force-cache' })
+                    .then((response) => {
+                        if (!response.ok) throw new Error(`Failed to load emoji manifest (${response.status})`);
+                        return response.json();
+                    })
+                    .then((manifest) => {
+                        buildEmojiRenderMap(manifest);
+                        preloadEmojiTextures();
+                    })
+                    .catch((error) => {
+                        console.error('Failed to load iOS emoji assets', error);
+                        state.emojiManifestPromise = null;
+                        state.emojiRenderMap = new Map();
+                        state.emojiRenderPattern = null;
+                    });
+            }
+            await state.emojiManifestPromise;
+        }
+
+        function replaceEmojiTextNode(textNode) {
+            const text = String(textNode?.nodeValue || '');
+            const pattern = state.emojiRenderPattern;
+            if (!pattern || !text) return null;
+            pattern.lastIndex = 0;
+            let match;
+            let lastIndex = 0;
+            let hasEmoji = false;
+            const fragment = document.createDocumentFragment();
+            while ((match = pattern.exec(text)) !== null) {
+                hasEmoji = true;
+                if (match.index > lastIndex) {
+                    fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+                }
+                const emojiValue = match[0];
+                const emojiAsset = state.emojiRenderMap.get(emojiValue);
+                if (emojiAsset?.primarySrc) {
+                    const img = document.createElement('img');
+                    img.className = 'noveo-emoji-image inline-block';
+                    img.src = emojiAsset.primarySrc;
+                    img.alt = emojiValue;
+                    img.width = 20;
+                    img.height = 20;
+                    img.loading = 'lazy';
+                    img.draggable = false;
+                    if (emojiAsset.fallbackSrc) img.setAttribute('data-fallback-src', emojiAsset.fallbackSrc);
+                    fragment.appendChild(img);
+                } else {
+                    fragment.appendChild(document.createTextNode(emojiValue));
+                }
+                lastIndex = match.index + emojiValue.length;
+            }
+            if (!hasEmoji) return null;
+            if (lastIndex < text.length) {
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+            }
+            return fragment;
+        }
+
+        function applyEmojiModeToElement(rootNode) {
+            if (state.currentEmojiMode !== 'ios' || !state.emojiRenderPattern || !rootNode) return;
+            const textNodes = [];
+            if (rootNode.nodeType === Node.TEXT_NODE) {
+                textNodes.push(rootNode);
+            } else {
+                const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                    textNodes.push(walker.currentNode);
+                }
+            }
+            textNodes.forEach((node) => {
+                const parentTag = node.parentElement?.tagName || '';
+                if (parentTag === 'CODE' || parentTag === 'PRE' || parentTag === 'SCRIPT' || parentTag === 'STYLE' || parentTag === 'TEXTAREA') return;
+                if (node.parentElement?.closest('img.noveo-emoji-image')) return;
+                const replacement = replaceEmojiTextNode(node);
+                if (replacement && node.parentNode) {
+                    node.parentNode.replaceChild(replacement, node);
+                }
+            });
+        }
+
+        function restoreEmojiImages(rootNode = document.body) {
+            if (!rootNode) return;
+            rootNode.querySelectorAll?.('img.noveo-emoji-image').forEach((img) => {
+                const emojiText = img.getAttribute('alt') || '';
+                img.replaceWith(document.createTextNode(emojiText));
+            });
+        }
+
+        function ensureEmojiObserver() {
+            if (state.emojiObserver || !document.body) return;
+            state.emojiObserver = new MutationObserver((mutations) => {
+                if (state.currentEmojiMode !== 'ios' || state.emojiObserverBusy) return;
+                state.emojiObserverBusy = true;
+                try {
+                    mutations.forEach((mutation) => {
+                        if (mutation.type === 'characterData') {
+                            applyEmojiModeToElement(mutation.target);
+                            return;
+                        }
+                        mutation.addedNodes.forEach((node) => {
+                            if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.ELEMENT_NODE) {
+                                applyEmojiModeToElement(node);
+                            }
+                        });
+                    });
+                } finally {
+                    state.emojiObserverBusy = false;
+                }
+            });
+            state.emojiObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+        }
+
+        function applyEmojiModeToRenderedHtml(html) {
+            if (state.currentEmojiMode !== 'ios' || !state.emojiRenderPattern || !html) return html;
+            const container = document.createElement('div');
+            container.innerHTML = html;
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+            const textNodes = [];
+            while (walker.nextNode()) {
+                const currentNode = walker.currentNode;
+                const parentTag = currentNode.parentElement?.tagName || '';
+                if (parentTag === 'CODE' || parentTag === 'PRE') continue;
+                textNodes.push(currentNode);
+            }
+            textNodes.forEach((node) => {
+                const replacement = replaceEmojiTextNode(node);
+                if (replacement && node.parentNode) {
+                    node.parentNode.replaceChild(replacement, node);
+                }
+            });
+            return container.innerHTML;
+        }
+
+        function renderPlainTextWithEmoji(text) {
+            return applyEmojiModeToRenderedHtml(escapeHtml(text || ''));
+        }
+
+        async function applyEmojiMode(nextMode, persist = true) {
+            const normalized = normalizeEmojiMode(nextMode);
+            state.currentEmojiMode = normalized;
+            if (persist) getStorage().saveEmojiMode(normalized);
+            if (normalized === 'ios') {
+                await ensureEmojiAssetsLoaded();
+                ensureEmojiObserver();
+                applyEmojiModeToElement(document.body);
+            } else {
+                if (state.emojiObserver) {
+                    state.emojiObserver.disconnect();
+                    state.emojiObserver = null;
+                }
+                restoreEmojiImages(document.body);
+                state.dom.emojiDownloadToast?.classList.add('hidden');
+            }
+            applyTranslations();
+            if (state.isFullyAuthenticated) {
+                if (state.currentChat) {
+                    openChat(state.currentChat, true);
+                } else {
+                    ui.renderContactList();
+                }
+            }
+        }
+
+        function isDirectImageUrl(rawUrl) {
+            const safeUrl = sanitizeMediaUrl(rawUrl);
+            return Boolean(safeUrl && /\.(png|jpe?g|gif|webp|avif|bmp|svg)(?:[?#]|$)/i.test(safeUrl));
+        }
+
+        function isDirectVideoUrl(rawUrl) {
+            const safeUrl = sanitizeMediaUrl(rawUrl);
+            return Boolean(safeUrl && /\.(mp4|webm|mov|m4v|ogv)(?:[?#]|$)/i.test(safeUrl));
+        }
+
         function extractAparatVideoId(rawUrl) {
             if (!rawUrl) return null;
             try {
@@ -1938,8 +2904,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     'class', 'href', 'target', 'rel', 'title', 'id',
                     'data-handle', 'data-reply-to-id', 'data-type', 'data-url', 'data-urls',
                     'data-action', 'data-code-id', 'data-temp-id', 'data-audio-url', 'data-audio-name',
-                    'data-avatar-url', 'data-avatar-color',
-                    'src', 'alt', 'controls', 'preload', 'download', 'allowfullscreen',
+                    'data-avatar-url', 'data-avatar-color', 'data-fallback-src',
+                    'src', 'alt', 'width', 'height', 'draggable', 'controls', 'preload', 'download', 'allowfullscreen',
                     'webkitallowfullscreen', 'mozallowfullscreen', 'frameborder', 'loading',
                     'allow', 'referrerpolicy', 'aria-label', 'aria-hidden', 'viewBox', 'viewbox',
                     'd', 'fill'
@@ -2000,6 +2966,12 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 getSessionToken: () => getValidSession()?.token || state.sessionToken || '',
                 getCurrentUser: () => state.currentUser,
                 getCurrentChat: () => state.currentChat,
+                getPreferredScreenShareQuality: () => {
+                    if (String(state.currentUser?.membershipTier || '').toLowerCase() !== 'premium') {
+                        return '480p';
+                    }
+                    return state.preferredScreenShareQuality === '720p' ? '720p' : '480p';
+                },
                 getPublicChatId: () => state.PUBLIC_CHAT_ID,
                 getUserById: (userId) => state.allUsers[userId],
                 showError: showErrorModal,
@@ -2041,6 +3013,11 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     }
                     if (Object.prototype.hasOwnProperty.call(nextState, 'currentScreenShareOwnerId')) {
                         state.currentScreenShareOwnerId = nextState.currentScreenShareOwnerId;
+                    }
+                    if (Object.prototype.hasOwnProperty.call(nextState, 'availableScreenShareOwnerIds')) {
+                        state.availableScreenShareOwnerIds = Array.isArray(nextState.availableScreenShareOwnerIds)
+                            ? nextState.availableScreenShareOwnerIds.filter(Boolean)
+                            : [];
                     }
                     if (Object.prototype.hasOwnProperty.call(nextState, 'isLocalScreenSharing')) {
                         state.isLocalScreenSharing = nextState.isLocalScreenSharing;
@@ -2139,6 +3116,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             state.dom.chatArea.classList.remove('flex');
             state.dom.welcomeScreen.classList.remove('hidden');
             state.dom.mainApp.classList.remove('chat-view-active');
+            state.dom.chatSearchButton?.classList.add('hidden');
         }
 
         function removeChatLocally(chatId) {
@@ -2146,6 +3124,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             delete state.allChats[chatId];
             delete state.typingUsers[chatId];
             delete state.messagePages[chatId];
+            delete state.chatHistoryState[chatId];
             delete state.e2eeSessions[chatId];
             state.selectedChatIds.delete(chatId);
             if (state.currentChat?.chatId === chatId) {
@@ -2298,7 +3277,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         }
 
         function isThemeFile(file) {
-            return Boolean(file?.name && file.name.toLowerCase().endsWith('.gct'));
+            return false;
         }
 
         function parseMessageContent(contentStr) {
@@ -2307,6 +3286,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     text: contentStr.text || null,
                     file: contentStr.file || null,
                     theme: contentStr.theme || null,
+                    poll: contentStr.poll || null,
                     inlineKeyboard: Array.isArray(contentStr.inlineKeyboard) ? contentStr.inlineKeyboard : null,
                     forwardedInfo: contentStr.forwardedInfo || null,
                     callLog: contentStr.callLog || null,
@@ -2322,6 +3302,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     text: data.text || null,
                     file: data.file || null,
                     theme: data.theme || null,
+                    poll: data.poll || null,
                     inlineKeyboard: Array.isArray(data.inlineKeyboard) ? data.inlineKeyboard : null,
                     forwardedInfo: data.forwardedInfo || null,
                     callLog: data.callLog || null,
@@ -2331,7 +3312,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     noticeActions: Array.isArray(data.noticeActions) ? data.noticeActions : null
                 };
             } catch (e) {
-                return { text: contentStr, file: null, theme: null, inlineKeyboard: null, forwardedInfo: null, callLog: null, starGiveaway: null, giftGiveaway: null, securityNotice: null, noticeActions: null };
+                return { text: contentStr, file: null, theme: null, poll: null, inlineKeyboard: null, forwardedInfo: null, callLog: null, starGiveaway: null, giftGiveaway: null, securityNotice: null, noticeActions: null };
             }
         }
 
@@ -2531,6 +3512,59 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return Array.isArray(payload?.results) ? payload.results : [];
         }
 
+        function requestChatMessageSearch(chatId, query, requestId) {
+            if (!chatId || !query || state.socket?.readyState !== WebSocket.OPEN) return;
+            state.socket.send(JSON.stringify({
+                type: 'search_chat_messages',
+                chatId,
+                query,
+                requestId
+            }));
+        }
+
+        function requestMessageContext(chatId, messageId) {
+            if (!chatId || !messageId || state.socket?.readyState !== WebSocket.OPEN) {
+                return Promise.resolve(null);
+            }
+            const requestId = `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            return new Promise((resolve) => {
+                state.pendingMessageContextRequests[requestId] = resolve;
+                state.socket.send(JSON.stringify({
+                    type: 'load_message_context',
+                    chatId,
+                    messageId,
+                    requestId
+                }));
+                window.setTimeout(() => {
+                    if (!state.pendingMessageContextRequests[requestId]) return;
+                    const pendingResolve = state.pendingMessageContextRequests[requestId];
+                    delete state.pendingMessageContextRequests[requestId];
+                    pendingResolve(null);
+                }, 5000);
+            });
+        }
+
+        function searchMessagesInChat(chatId, query) {
+            const normalizedQuery = String(query || '').trim().toLowerCase();
+            if (!chatId || !normalizedQuery) return [];
+            const chat = state.allChats[chatId];
+            if (!chat || !Array.isArray(chat.messages)) return [];
+            return chat.messages
+                .map((message) => normalizeMessage(message))
+                .filter((message) => {
+                    const text = String(
+                        message?.text
+                        || message?.file?.name
+                        || message?.content?.text
+                        || message?.content
+                        || ''
+                    ).toLowerCase();
+                    return text.includes(normalizedQuery);
+                })
+                .slice(-40)
+                .reverse();
+        }
+
         function renderInlineKeyboard(message) {
             const rows = Array.isArray(message?.inlineKeyboard) ? message.inlineKeyboard : [];
             if (!rows.length) return '';
@@ -2607,6 +3641,33 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 
         function normalizeMessages(messages = []) {
             return dedupeMessages((Array.isArray(messages) ? messages : []).map(normalizeMessage));
+        }
+
+        function trimChatMessages(chatId, limit = INACTIVE_CHAT_MESSAGE_LIMIT) {
+            const chat = state.allChats[chatId];
+            if (!chat || !Array.isArray(chat.messages)) return;
+            const maxMessages = Math.max(20, Number(limit) || 0);
+            if (chat.messages.length <= maxMessages) return;
+            chat.messages = chat.messages.slice(-maxMessages);
+        }
+
+        function getOldestLoadedMessage(chatId) {
+            const messages = state.allChats[chatId]?.messages || [];
+            return messages.length ? messages[0] : null;
+        }
+
+        function ensureChatHistoryState(chatId, options = {}) {
+            const current = state.chatHistoryState[chatId] || {};
+            const next = {
+                hasMore: typeof options.hasMore === 'boolean' ? options.hasMore : (typeof current.hasMore === 'boolean' ? current.hasMore : true),
+                loading: Boolean(options.loading ?? current.loading),
+                initialRendered: Boolean(options.initialRendered ?? current.initialRendered),
+                lastRequestedBefore: Object.prototype.hasOwnProperty.call(options, 'lastRequestedBefore')
+                    ? options.lastRequestedBefore
+                    : (current.lastRequestedBefore ?? null)
+            };
+            state.chatHistoryState[chatId] = next;
+            return next;
         }
 
         function normalizePinnedMessage(message) {
@@ -2866,8 +3927,18 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 			});
 
 			escapedText = escapedText.replace(/\n/g, '<br>');
-			return sanitizeRichHtml(escapedText);
+			return sanitizeRichHtml(applyEmojiModeToRenderedHtml(escapedText));
 		}
+
+        document.addEventListener('error', (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLImageElement) || !target.classList.contains('noveo-emoji-image')) return;
+            const fallbackSrc = target.getAttribute('data-fallback-src') || '';
+            if (fallbackSrc && target.src !== new URL(fallbackSrc, window.location.origin).href) {
+                target.src = fallbackSrc;
+                target.removeAttribute('data-fallback-src');
+            }
+        }, true);
 
 		function renderVoiceMessage(message) {
             const safeVoiceUrl = sanitizeMediaUrl(message.voiceUrl) || '';
@@ -2911,9 +3982,99 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 		});
 		
 		function renderUsernameWithTag(rawUsername) {
+			return renderUsernameWithTagAndFont(rawUsername, '');
+		}
+
+        function normalizeNicknameFont(value = '') {
+            const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+            return PROFILE_FONT_OPTIONS.some((entry) => entry.value === normalized) ? normalized : '';
+        }
+
+        function normalizeProfileSkin(value = null) {
+            if (!value || typeof value !== 'object') return null;
+            const mode = String(value.mode || '').trim().toLowerCase();
+            if (mode === 'solid') {
+                const color = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value.color || '').trim()) ? String(value.color).trim() : '';
+                return color ? { mode: 'solid', color } : null;
+            }
+            if (mode === 'gradient') {
+                const colors = Array.isArray(value.colors)
+                    ? value.colors.map((entry) => String(entry || '').trim()).filter((entry) => /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(entry)).slice(0, 3)
+                    : [];
+                if (colors.length < 2) return null;
+                const angle = Number.isFinite(Number(value.angle)) ? Math.max(0, Math.min(360, Number(value.angle))) : 135;
+                return { mode: 'gradient', colors, angle };
+            }
+            return null;
+        }
+
+        function getProfileSkinBackground(value = null) {
+            const skin = normalizeProfileSkin(value);
+            if (!skin) return '';
+            if (skin.mode === 'solid') return skin.color;
+            return `linear-gradient(${skin.angle}deg, ${skin.colors.join(', ')})`;
+        }
+
+        function buildProfileSkinFromInputs() {
+            const skinMode = String(state.dom.profileSkinModeSelect?.value || '').trim().toLowerCase();
+            const primarySkinColor = String(state.dom.profileSkinColorPrimary?.value || '').trim();
+            const secondarySkinColor = String(state.dom.profileSkinColorSecondary?.value || '').trim();
+            const tertiarySkinColor = String(state.dom.profileSkinColorTertiary?.value || '').trim();
+            const gradientStops = Number.parseInt(String(state.dom.profileSkinGradientStopsSelect?.value || '2'), 10) === 3 ? 3 : 2;
+            if (skinMode === 'solid') return normalizeProfileSkin({ mode: 'solid', color: primarySkinColor });
+            if (skinMode === 'gradient') {
+                const colors = [primarySkinColor, secondarySkinColor];
+                if (gradientStops === 3) colors.push(tertiarySkinColor);
+                return normalizeProfileSkin({ mode: 'gradient', colors, angle: 135 });
+            }
+            return null;
+        }
+
+        function syncProfileSkinControls(skin = null) {
+            const mode = String(state.dom.profileSkinModeSelect?.value || '').trim().toLowerCase();
+            const isGradient = mode === 'gradient';
+            const gradientStops = Number.parseInt(String(state.dom.profileSkinGradientStopsSelect?.value || '2'), 10) === 3 ? 3 : 2;
+            state.dom.profileSkinGradientStopsWrap?.classList.toggle('hidden', !isGradient);
+            state.dom.profileSkinColorSecondaryWrap?.classList.toggle('hidden', !isGradient);
+            state.dom.profileSkinColorTertiaryWrap?.classList.toggle('hidden', !isGradient || gradientStops !== 3);
+            applyProfileSkinToSurface(state.dom.settingsProfileSheet, skin ?? buildProfileSkinFromInputs());
+        }
+
+        function applyProfileSkinToSurface(surfaceEl, skin) {
+            if (!surfaceEl) return;
+            const background = getProfileSkinBackground(skin);
+            surfaceEl.style.setProperty('--profile-skin-bg', background || 'none');
+            surfaceEl.classList.toggle('profile-skin-active', Boolean(background));
+        }
+
+        function normalizePremiumStarIcon(value = null) {
+            if (!value || typeof value !== 'object') return null;
+            const url = sanitizeMediaUrl(value.url || '');
+            const source = String(value.source || '').trim().toLowerCase();
+            const type = String(value.type || '').trim().toLowerCase() === 'tgs' ? 'tgs' : 'image';
+            if (!url || !['saved', 'template'].includes(source)) return null;
+            return { url, type, source, templateId: String(value.templateId || '').trim() || '' };
+        }
+
+        function renderPremiumStarIconMedia(icon, className = 'membership-star-media') {
+            const normalized = normalizePremiumStarIcon(icon);
+            if (!normalized) return '<i class="fas fa-star"></i>';
+            if (normalized.type === 'tgs') {
+                return createTgsMarkup(normalized.url, 'Premium', className);
+            }
+            return `<img src="${escapeAttr(normalized.url)}" alt="${escapeAttr(t('premium.title', 'Premium'))}" class="${className}">`;
+        }
+
+        function getNicknameFontClass(nicknameFont = '') {
+            const normalized = normalizeNicknameFont(nicknameFont);
+            return normalized ? `nickname-font nickname-font-${normalized}` : 'nickname-font';
+        }
+
+		function renderUsernameWithTagAndFont(rawUsername, nicknameFont = '') {
 			if (!rawUsername) return '';
 			const usernameRegex = /^(.*?) \[\s*#([0-9a-fA-F]{3,6})\s*,\s*"([^"]+)"\s*\]$/;
 			const match = rawUsername.match(usernameRegex);
+            const nameClass = getNicknameFontClass(nicknameFont);
 
 			if (match) {
 				const displayName = match[1].trim();
@@ -2923,10 +4084,10 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 				if (!isValidColor) color = '#3b82f6';
 				const safeDisplayName = escapeHtml(displayName);
 				const safeTagText = escapeHtml(tagText);
-				return `<span>${safeDisplayName}</span><span class="custom-user-tag" style="background-color: ${color};">${safeTagText}</span>`;
+				return `<span class="${nameClass}">${safeDisplayName}</span><span class="custom-user-tag" style="background-color: ${color};">${safeTagText}</span>`;
 			}
 
-			return `<span>${escapeHtml(rawUsername)}</span>`;
+			return `<span class="${nameClass}">${escapeHtml(rawUsername)}</span>`;
 		}
 
         function renderVerifiedBadge(title = t('chat.verified', 'Verified')) {
@@ -2937,12 +4098,34 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return ` <span class="custom-user-tag bot-user-tag">${escapeHtml(t('bot.tag', 'Bot'))}</span>`;
         }
 
-        function renderDisplayName(rawName, isVerified = false, isBot = false) {
-            return `${renderUsernameWithTag(rawName)}${isBot ? renderBotBadge() : ''}${isVerified ? renderVerifiedBadge() : ''}`;
+        function shouldHideBuiltInBotTag(rawName = '') {
+            const normalized = String(rawName || '').trim().toLowerCase();
+            return normalized === 'mail' || normalized === 'noveo';
         }
 
-        function renderPlainDisplayName(rawName, isVerified = false, isBot = false) {
-            return `${escapeHtml(rawName || '')}${isBot ? renderBotBadge() : ''}${isVerified ? renderVerifiedBadge() : ''}`;
+        function renderMembershipTierBadge(membershipTier = '', premiumStarIcon = null, interactive = false) {
+            const tier = String(membershipTier || '').toLowerCase();
+            if (tier === 'silver') return ` <span class="membership-star-badge is-silver${interactive ? ' is-actionable' : ''}" ${interactive ? 'data-membership-badge="1" data-membership-tier="silver" role="button" tabindex="0"' : 'aria-hidden="true"'}><i class="fas fa-star"></i></span>`;
+            if (tier === 'premium') return ` <span class="membership-star-badge is-premium${interactive ? ' is-actionable' : ''}" ${interactive ? 'data-membership-badge="1" data-membership-tier="premium" data-premium-badge="1" role="button" tabindex="0"' : 'aria-hidden="true"'}>${renderPremiumStarIconMedia(premiumStarIcon)}</span>`;
+            return '';
+        }
+
+        function renderDisplayName(rawName, isVerified = false, isBot = false, membershipTier = '', nicknameFont = '', premiumStarIcon = null, interactivePremiumBadge = false) {
+            return `${renderUsernameWithTagAndFont(rawName, nicknameFont)}${renderMembershipTierBadge(membershipTier, premiumStarIcon, interactivePremiumBadge)}${(isBot && !shouldHideBuiltInBotTag(rawName)) ? renderBotBadge() : ''}${isVerified ? renderVerifiedBadge() : ''}`;
+        }
+
+        function renderPlainDisplayName(rawName, isVerified = false, isBot = false, membershipTier = '', nicknameFont = '', premiumStarIcon = null, interactivePremiumBadge = false) {
+            return `<span class="${getNicknameFontClass(nicknameFont)}">${escapeHtml(rawName || '')}</span>${renderMembershipTierBadge(membershipTier, premiumStarIcon, interactivePremiumBadge)}${(isBot && !shouldHideBuiltInBotTag(rawName)) ? renderBotBadge() : ''}${isVerified ? renderVerifiedBadge() : ''}`;
+        }
+
+        function applyNicknameFontPreview(fontValue = '') {
+            const input = state.dom.editUsernameInput;
+            if (!input) return;
+            input.classList.remove('nickname-font', ...PROFILE_FONT_OPTIONS.filter((entry) => entry.value).map((entry) => `nickname-font-${entry.value}`));
+            const normalized = normalizeNicknameFont(fontValue);
+            if (normalized) {
+                input.classList.add('nickname-font', `nickname-font-${normalized}`);
+            }
         }
 
         function shouldAnonymizeChannelSender(chat = state.currentChat) {
@@ -3192,6 +4375,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         function getMessageModerationSummary(message) {
             if (!message) return t('message.unknownMessage', 'Unknown message');
             if (message.theme) return tr('message.themeSummary', 'Theme: {name}', { name: message.theme.name || t('message.themeFallback', 'Theme') });
+            if (message.poll) return tr('polls.summary', 'Poll: {question}', { question: message.poll.question || t('polls.title', 'Poll') });
             if (message.file) return tr('message.fileSummary', 'File: {name}', { name: message.file.name || t('message.attachment', 'Attachment') });
             return String(message.text || '').trim() || t('message.noText', '[No text]');
         }
@@ -3462,7 +4646,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     <div class="seen-by-card">
                         <div class="w-10 h-10 avatar-circle flex-shrink-0" style="background-image: url('${escapeAttr(avatar.url)}'); background-color: ${avatar.color};">${avatar.initial}</div>
                         <div class="seen-by-meta">
-                            <div class="seen-by-name">${renderDisplayName(username, Boolean(user?.isVerified), Boolean(user?.isBot))}</div>
+                            <div class="seen-by-name">${renderDisplayName(username, Boolean(user?.isVerified), Boolean(user?.isBot), user?.membershipTier, user?.nicknameFont, user?.premiumStarIcon)}</div>
                             <div class="seen-by-note">${escapeHtml(t('seenBy.note', 'Seen this message'))}</div>
                             <div class="seen-by-note">${reaction ? escapeHtml(tr('seenBy.reactedWith', 'Reacted with {emoji}', { emoji: reaction })) : escapeHtml(t('seenBy.noReaction', 'No reaction'))}</div>
                         </div>
@@ -3517,7 +4701,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         <div class="seen-by-card">
                             <div class="w-10 h-10 avatar-circle flex-shrink-0" style="background-image: url('${escapeAttr(avatar.url)}'); background-color: ${avatar.color};">${avatar.initial}</div>
                             <div class="seen-by-meta">
-                                <div class="seen-by-name">${renderDisplayName(username, Boolean(user?.isVerified), Boolean(user?.isBot))}</div>
+                                <div class="seen-by-name">${renderDisplayName(username, Boolean(user?.isVerified), Boolean(user?.isBot), user?.membershipTier, user?.nicknameFont, user?.premiumStarIcon)}</div>
                                 <div class="seen-by-note">${escapeHtml(tr('reactions.reactedWith', 'Reacted with {emoji}', { emoji: entry.emoji }))}</div>
                             </div>
                         </div>
@@ -3671,9 +4855,110 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             openMessageActionSheet(messageId);
         }
 
+        function formatPollRemainingTime(expiresAt) {
+            const remaining = Math.max(0, Number(expiresAt || 0) - Math.floor(Date.now() / 1000));
+            if (!remaining) return t('polls.closed', 'Closed');
+            if (remaining >= 86400) return tr('polls.timeDays', '{count}d left', { count: Math.ceil(remaining / 86400) });
+            if (remaining >= 3600) return tr('polls.timeHours', '{count}h left', { count: Math.ceil(remaining / 3600) });
+            if (remaining >= 60) return tr('polls.timeMinutes', '{count}m left', { count: Math.ceil(remaining / 60) });
+            return tr('polls.timeSeconds', '{count}s left', { count: remaining });
+        }
+
+        function renderPollCard(msg) {
+            const poll = msg.poll || {};
+            const pollQuestion = renderPlainTextWithEmoji(poll.question || t('polls.title', 'Poll'));
+            const pollOptions = Array.isArray(poll.options) ? poll.options : [];
+            const metaBadges = [];
+            if (poll.anonymous) metaBadges.push(`<span class="px-2 py-1 rounded-full bg-slate-100 text-slate-700">${escapeHtml(t('polls.anonymous', 'Anonymous Mode'))}</span>`);
+            if (poll.examMode) metaBadges.push(`<span class="px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">${escapeHtml(t('polls.examMode', 'Exam Mode'))}</span>`);
+            if (poll.resultsAfterVote) metaBadges.push(`<span class="px-2 py-1 rounded-full bg-violet-100 text-violet-700">${escapeHtml(t('polls.resultsAfterVote', 'Hide Results Until Vote'))}</span>`);
+            if (poll.expiresAt) {
+                const badgeText = poll.isExpired ? t('polls.closed', 'Closed') : formatPollRemainingTime(poll.expiresAt);
+                metaBadges.push(`<span class="px-2 py-1 rounded-full bg-amber-100 text-amber-700">${escapeHtml(badgeText)}</span>`);
+            }
+            const optionsHtml = pollOptions.map((option, index) => {
+                const isSelected = option.id && option.id === poll.viewerChoiceId;
+                const canVote = Boolean(poll.canVote && !msg.pending);
+                const countText = poll.canSeeResults
+                    ? tr('polls.voteCount', '{count} votes', { count: Number(option.voteCount || 0) })
+                    : t('polls.voteToSeeResults', 'Vote to see results');
+                const percentText = poll.canSeeResults ? `${Number(option.percentage || 0)}%` : '';
+                const correctnessBadge = option.isCorrect ? `<span class="text-xs font-semibold text-emerald-700">${escapeHtml(t('polls.correctAnswerBadge', 'Correct'))}</span>` : '';
+                return `
+                    <button type="button" class="w-full text-left rounded-2xl border px-3 py-3 transition ${isSelected ? 'border-blue-500 bg-blue-50' : 'bg-white/80 hover:bg-white'} ${canVote ? '' : 'cursor-default'}" data-action="vote-poll" data-message-id="${escapeAttr(msg.messageId)}" data-option-id="${escapeAttr(option.id || '')}" ${canVote ? '' : 'disabled'}>
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="font-semibold app-text-primary break-words">${renderPlainTextWithEmoji(option.text || tr('polls.optionNumber', 'Option {number}', { number: index + 1 }))}</div>
+                                <div class="text-xs app-text-muted mt-1">${escapeHtml(countText)}</div>
+                            </div>
+                            <div class="text-right flex-shrink-0">
+                                ${percentText ? `<div class="text-sm font-bold app-text-primary">${escapeHtml(percentText)}</div>` : ''}
+                                ${correctnessBadge}
+                            </div>
+                        </div>
+                    </button>
+                `;
+            }).join('');
+            const footerBits = [];
+            if (poll.canSeeResults) {
+                footerBits.push(`<span>${escapeHtml(tr('polls.totalVotes', '{count} total votes', { count: Number(poll.totalVotes || 0) }))}</span>`);
+            }
+            if (poll.viewerChoiceId) footerBits.push(`<span>${escapeHtml(t('polls.youVoted', 'You voted'))}</span>`);
+            if (poll.examMode && poll.viewerChoiceId && !poll.canViewVotes) footerBits.push(`<span>${escapeHtml(t('polls.examHiddenAnswers', 'Answers are hidden in exam mode'))}</span>`);
+            const votesButton = poll.canViewVotes
+                ? `<button type="button" class="w-full rounded-xl btn-neutral py-2.5 interactive-pop font-semibold mt-3" data-action="view-poll-votes" data-message-id="${escapeAttr(msg.messageId)}">${escapeHtml(t('polls.votes', 'Votes'))}</button>`
+                : '';
+            return `
+                <div class="theme-card p-4 rounded-2xl border max-w-sm">
+                    <div class="font-bold text-base mb-3 flex items-center gap-2"><i class="fas fa-square-poll-vertical app-warning-text"></i>${pollQuestion}</div>
+                    ${metaBadges.length ? `<div class="flex flex-wrap gap-2 text-xs mb-3">${metaBadges.join('')}</div>` : ''}
+                    <div class="space-y-2">${optionsHtml}</div>
+                    <div class="mt-3 text-xs app-text-muted flex flex-wrap gap-3">${footerBits.join('')}</div>
+                    ${votesButton}
+                </div>
+            `;
+        }
+
+        async function voteOnPoll(messageId, optionId) {
+            if (!messageId || !optionId || !state.socket || state.socket.readyState !== WebSocket.OPEN || !state.currentChat?.chatId) return;
+            state.socket.send(JSON.stringify({
+                type: 'vote_poll',
+                chatId: state.currentChat.chatId,
+                messageId,
+                optionId,
+            }));
+        }
+
+        function openPollVotesModal(message) {
+            const poll = message?.poll;
+            if (!poll?.canViewVotes || !Array.isArray(poll.options)) return;
+            state.dom.pollVotesTitle.textContent = t('polls.votes', 'Votes');
+            const html = poll.options.map((option) => {
+                const voterIds = Array.isArray(option.voterIds) ? option.voterIds : [];
+                const voterHtml = voterIds.length
+                    ? voterIds.map((userId) => {
+                        const user = state.allUsers[userId];
+                        const name = user?.username || t('common.unknown', 'Unknown');
+                        return `<div class="rounded-xl border px-3 py-2 bg-gray-50 text-sm">${renderDisplayName(name, Boolean(user?.isVerified), Boolean(user?.isBot), user?.membershipTier, user?.nicknameFont, user?.premiumStarIcon)}</div>`;
+                    }).join('')
+                    : `<div class="text-sm app-text-muted">${escapeHtml(t('polls.noVotesYet', 'No votes yet.'))}</div>`;
+                return `
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="font-semibold app-text-primary">${renderPlainTextWithEmoji(option.text || '')}</div>
+                            ${option.isCorrect ? `<span class="text-xs font-semibold text-emerald-700">${escapeHtml(t('polls.correctAnswerBadge', 'Correct'))}</span>` : ''}
+                        </div>
+                        <div class="space-y-2">${voterHtml}</div>
+                    </div>
+                `;
+            }).join('<div class="border-t app-border"></div>');
+            state.dom.pollVotesContent.innerHTML = sanitizeRichHtml(html);
+            ui.openModal(state.dom.pollVotesModal);
+        }
+
         const ui = {
             initDOM() {
-                const ids = ["loadingOverlay","loadingStatus","authScreen","mainApp","sidebar","settingsButton","contactsList","chatWindow","welcomeScreen","chatArea","backToContacts","chatAvatar","chatName","chatStatus","messagesContainer","fileInput","fileUploadButton","stickersButton","stickersModal","closeStickersButton","stickersGrid","messageInput","sendButton","settingsModal","closeSettingsButton","settingsAvatar","settingsUsername","settingsUserid","editUsernameInput","editHandleInput","editBioInput","editBioCounter","logoutButton", "saveSettingsButton","sidebarTitle","sidebarSearchBar","sidebarSearchInput","closeSidebarSearchButton","historyLoader","uploadProgressContainer","uploadProgressBar","confirmDeleteModal","cancelDeleteButton","confirmDeleteButton","avatarInput","avatarEditorModal","closeAvatarEditorButton","avatarEditorViewport","avatarEditorImage","avatarEditorCropBox","avatarEditorReset","avatarEditorZoom","avatarEditorUploadProgressContainer","avatarEditorUploadProgressBar","avatarEditorUploadProgressText","cancelAvatarEditorButton","saveAvatarEditorButton","filePreviewContainer","removeFilePreview","imagePreview","fileIconPreview","fileNamePreview","fileSizePreview","replyPreviewContainer","removeReplyPreview","replyPreviewUsername","replyPreviewText", "chatHeaderInfo", "userInfoModal", "closeUserInfoModal", "userInfoMuteButton", "userInfoAvatar", "userInfoUsername", "userInfoStatus", "userInfoBio", "userInfoUserid", "userInfoMessageButton", "userInfoContactButton", "userInfoCreatedAt", "userInfoHandle", "userInfoGiftsSection", "userInfoGiftsList", "userInfoNoGifts", "userInfoMutualGroupsList", "userInfoTabBio", "userInfoTabGifts", "userInfoTabMutualGroups", "userInfoPanelBio", "userInfoPanelGifts", "userInfoPanelMutualGroups", "mediaViewerModal", "closeMediaViewer", "mediaViewerImage", "mediaViewerVideo", "emptyChatPlaceholder", "forwardMessageModal", "closeForwardModalButton", "forwardContactsList", "cancelForwardButton", "confirmForwardButton", "createChannelButton","createOptionsModal","closeCreateOptionsModalButton","createOptionCreateChannel","createOptionCreateGroup", "createChannelModal","createGroupModal","closeGroupModalButton","createGroupForm","groupNameInput","groupMembersList","submitCreateGroup", "closeChannelModalButton", "createChannelForm", "submitCreateChannel", "channelAvatarInput", "channelAvatarPreview", "channelNameInput", "channelHandleInput", "messageInputContainer", "joinChannelBar", "joinChannelButton", "loginForm", "registerForm", "loginUsernameInput", "loginPasswordInput", "loginButton", "registerUsernameInput", "registerPasswordInput", "registerButton", "showRegister", "showLogin", "authError", "pinnedMessageBar", "pinnedMessageContent", "unpinButton", "loadingSpinner", "logoutFromLoadingButton", "leaveGroupButton", "e2eeToggleButton", "voiceCallButton", "activeCallBar", "voiceParticipantsContainer", "leaveCallButton", "toggleScreenShareButton", "toggleMuteButton", "toggleDeafenButton", "toggleCallStageButton", "callStatusLabel", "callStatusMeta", "callScreenStage", "incomingCallModal", "incomingCallAvatar", "incomingCallName", "incomingCallChatName", "declineCallButton", "acceptCallButton", "resetThemeButton", "errorModal", "errorModalTitle", "errorModalMessage", "closeErrorModalButton", "errorToast", "errorToastTitle", "errorToastMessage",
+                const ids = ["loadingOverlay","loadingStatus","authScreen","onboardingScreen","onboardingCard","onboardingIcon","onboardingDescription","onboardingDots","onboardingSkipButton","onboardingNextButton","authLoginSubtitle","mainApp","sidebar","settingsButton","contactsList","chatWindow","welcomeScreen","chatArea","backToContacts","chatAvatar","chatName","chatStatus","messagesContainer","fileInput","fileUploadButton","stickersButton","stickersModal","closeStickersButton","stickersGrid","attachMenuPanel","closeAttachMenuButton","attachMenuFileButton","attachMenuPollButton","pollComposerModal","closePollComposerButton","pollQuestionInput","pollOptionsContainer","addPollOptionButton","sendPollButton","pollAnonymousToggle","pollExamModeToggle","pollCorrectOptionRow","pollCorrectOptionSelect","pollResultsAfterVoteToggle","pollTimerSelect","pollVotesModal","closePollVotesButton","pollVotesTitle","pollVotesContent","messageInput","sendButton","settingsModal","closeSettingsButton","settingsAvatar","settingsUsername","settingsUserid","editUsernameInput","editUsernameFontSelect","editHandleInput","editBioInput","editBioCounter","logoutButton", "saveSettingsButton","sidebarTitle","sidebarSearchBar","sidebarSearchInput","closeSidebarSearchButton","historyLoader","uploadProgressContainer","uploadProgressBar","confirmDeleteModal","cancelDeleteButton","confirmDeleteButton","avatarInput","avatarEditorModal","closeAvatarEditorButton","avatarEditorViewport","avatarEditorImage","avatarEditorCropBox","avatarEditorReset","avatarEditorZoom","avatarEditorUploadProgressContainer","avatarEditorUploadProgressBar","avatarEditorUploadProgressText","cancelAvatarEditorButton","saveAvatarEditorButton","filePreviewContainer","removeFilePreview","imagePreview","fileIconPreview","fileNamePreview","fileSizePreview","replyPreviewContainer","removeReplyPreview","replyPreviewUsername","replyPreviewText", "chatHeaderInfo", "chatSearchButton", "userInfoModal", "closeUserInfoModal", "userInfoMuteButton", "userInfoAvatar", "userInfoUsername", "userInfoStatus", "userInfoBio", "userInfoUserid", "userInfoMessageButton", "userInfoContactButton", "userInfoCreatedAt", "userInfoHandle", "userInfoGiftsSection", "userInfoGiftsList", "userInfoNoGifts", "userInfoMutualGroupsList", "userInfoTabBio", "userInfoTabGifts", "userInfoTabMutualGroups", "userInfoPanelBio", "userInfoPanelGifts", "userInfoPanelMutualGroups", "mediaViewerModal", "closeMediaViewer", "mediaViewerImage", "mediaViewerVideo", "emptyChatPlaceholder", "forwardMessageModal", "closeForwardModalButton", "forwardContactsList", "cancelForwardButton", "confirmForwardButton", "createChannelButton","createOptionsModal","closeCreateOptionsModalButton","createOptionCreateChannel","createOptionCreateGroup", "createChannelModal","createGroupModal","closeGroupModalButton","createGroupForm","groupNameInput","groupMembersList","submitCreateGroup", "closeChannelModalButton", "createChannelForm", "submitCreateChannel", "channelAvatarInput", "channelAvatarPreview", "channelNameInput", "channelHandleInput", "messageInputContainer", "joinChannelBar", "joinChannelButton", "loginForm", "registerForm", "loginUsernameInput", "loginPasswordInput", "loginButton", "registerUsernameInput", "registerPasswordInput", "registerButton", "showRegister", "showLogin", "authError", "pinnedMessageBar", "pinnedMessageContent", "unpinButton", "loadingSpinner", "logoutFromLoadingButton", "leaveGroupButton", "e2eeToggleButton", "voiceCallButton", "activeCallBar", "voiceParticipantsContainer", "leaveCallButton", "toggleScreenShareButton", "toggleScreenShareQualityButton", "toggleMuteButton", "toggleDeafenButton", "toggleCallStageButton", "callStatusLabel", "callStatusMeta", "callScreenStage", "incomingCallModal", "incomingCallAvatar", "incomingCallName", "incomingCallChatName", "declineCallButton", "acceptCallButton", "resetThemeButton", "errorModal", "errorModalTitle", "errorModalMessage", "closeErrorModalButton", "errorToast", "errorToastTitle", "errorToastMessage", "emojiDownloadToast", "emojiDownloadTitle", "emojiDownloadMessage", "emojiDownloadProgressContainer", "emojiDownloadProgressBar", "captchaModal", "captchaFrame",
                 "mainMenuOverlay", "menuSettingsBtn", "menuContactsBtn", "menuNewChatBtn", "menuStarsBtn", "menuStarsSummary", "menuCloseBtn", "contactsModal", "closeContactsModal", "allContactsList", "contactSearchInput", "saveContactModal", "saveContactTitle", "saveContactNameInput", "closeSaveContactModalButton", "cancelSaveContactButton", "confirmSaveContactButton",
                 // MODIFIED: Added updater elements 
                 // MODIFIED: Added updater elements
@@ -3683,11 +4968,18 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 "deleteAccountModal", "closeDeleteAccountButton", "cancelDeleteAccountButton", "openDeleteAccountBtn", "deleteAccountConfirmCheck", "openDevicesButton", "devicesModal", "closeDevicesButton", "devicesList",
                 "chatSettingsModal", "chatSettingsTitle", "chatSettingsCloseBtn", "chatSettingsMembersList", "chatSettingsChatName", "chatSettingsEditHandleBtn", "chatSettingsDeleteBtn",
                 "editHandleModal", "editHandleTitle", "editHandleCloseBtn", "editHandleInput", "editHandleError", "editHandleDeleteBtn", "editHandleSaveBtn",
-                "settingsMenuView", "settingsProfileSection", "settingsAccountSection", "settingsPreferencesSection", "settingsChangelogSection", "themePresetsGrid", "themesModal", "closeThemesButton", "openThemesButton", "themePresetSummary", "settingsLanguageSelect", "notificationsPermissionStatus", "notificationsPermissionButton",
+                "emailComposerModal", "emailComposerTitle", "closeEmailComposerButton", "emailComposeTargetInput", "emailComposeSubjectInput", "emailComposeBodyInput", "cancelEmailComposerButton", "sendEmailComposerButton",
+                "emailAddressModal", "emailAddressModalTitle", "closeEmailAddressButton", "emailAddressLocalPartInput", "emailAddressDomainText", "cancelEmailAddressButton", "createEmailAddressButton",
+                "emailViewerModal", "emailViewerTitle", "emailViewerMeta", "emailViewerDeleteButton", "emailViewerReplyButton", "emailViewerBlockButton", "closeEmailViewerButton", "emailViewerFrame", "emailViewerTextWrap", "emailViewerTextContent",
+                "settingsMenuView", "settingsProfileSection", "settingsAccountSection", "settingsPreferencesSection", "settingsChangelogSection", "themePresetsGrid", "themesModal", "closeThemesButton", "openThemesButton", "themePresetSummary", "settingsLanguageSelect", "settingsEmojiSelect", "notificationsPermissionStatus", "notificationsPermissionButton",
+                "settingsPremiumOption", "premiumModal", "closePremiumModalButton", "premiumParticlesCanvas", "premiumStarCanvas", "premiumStarFallback", "premiumHeroTitle", "premiumBenefitLine1", "premiumBenefitLine2", "premiumBenefitLine3", "premiumBenefitLine4", "premiumBenefitLine5", "premiumBenefitLine6", "premiumBenefitLine7", "premiumBuyButton", "premiumBuyButtonLabel", "premiumSilverUpsellButton", "premiumCancelButton", "premiumViewProfileButton", "premiumPaymentModal", "closePremiumPaymentModalButton", "premiumPaymentKicker", "premiumPaymentAmount", "premiumPaymentHelp", "premiumPaymentCardNumber", "premiumPaymentCardholderName", "premiumReceiptInput", "premiumReceiptPreview", "submitPremiumPaymentButton", "submitPremiumPaymentLabel",
                 "settingsProfileOption", "settingsAccountOption", "settingsPreferencesOption", "settingsChangelogOption", "settingsBackBtn", "settingsTitle", "settingsChangelogVersion", "settingsChangelogList",
                 "blockGroupInvitesCheckbox", "openWalletButton",
                 "settingsProfileEditButton", "settingsProfileCancelEdit", "settingsProfileStatus", "settingsProfileCreatedAt", "settingsProfileBio", "settingsProfileTabBio", "settingsProfileTabGifts", "settingsProfileTabMutualGroups", "settingsProfilePanelBio", "settingsProfilePanelGifts", "settingsProfilePanelMutualGroups", "settingsProfileViewMode", "settingsProfileEditMode", "settingsProfileGiftsSection", "settingsProfileGiftsList", "settingsProfileNoGifts", "settingsProfileMutualGroupsList",
+                "settingsProfileSheet", "settingsProfileHeader", "profileSkinModeSelect", "profileSkinGradientStopsWrap", "profileSkinGradientStopsSelect", "profileSkinColorPrimary", "profileSkinColorSecondary", "profileSkinColorSecondaryWrap", "profileSkinColorTertiary", "profileSkinColorTertiaryWrap",
+                "userInfoProfileSheet",
                 "walletModal", "closeWalletModal", "walletBalanceValue", "walletTransactionCount", "walletGiveawayChat", "walletGiveawayAmount", "walletGiveawaySubmit", "walletTransactionsList", "walletMainSection", "walletSendSection", "walletTransactionsSection", "walletOpenSendSection", "walletOpenTransactionsSection", "walletBackToMain", "walletTransactionsBackToMain",
+                "premiumStarPickerModal", "closePremiumStarPickerButton", "premiumStarSourceStickers", "premiumStarSourceTemplates", "premiumStarResetButton", "premiumStarPickerStatus", "premiumStarPickerGrid", "cancelPremiumStarPickerButton", "savePremiumStarPickerButton",
                 "giftDetailModal", "closeGiftDetailModal", "giftDetailIcon", "giftDetailName", "giftDetailPrice", "giftDetailIssued", "giftDetailStatus", "giftDetailBuyButton",
                 "giftActionModal", "closeGiftActionModal", "giftActionOwnButton", "giftActionGiftButton", "giftActionChatField", "giftActionChatSelect", "giftActionConfirmButton", "giftActionStatus"];
                 ids.forEach(id => state.dom[id] = document.getElementById(id));
@@ -3709,8 +5001,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
             },
             hideLoading() { state.dom.loadingOverlay.classList.add('hidden'); state.dom.loadingOverlay.classList.remove('flex'); },
-            showAuthScreen() { this.hideLoading(); this.setReconnectingState(false); state.dom.authScreen.classList.remove('hidden'); state.dom.authScreen.classList.add('flex'); state.dom.mainApp.classList.add('hidden'); state.dom.mainApp.classList.remove('md:flex'); },
-            showApp() { this.hideLoading(); state.dom.mainApp.classList.remove('hidden'); state.dom.mainApp.classList.add('md:flex'); state.dom.authScreen.classList.add('hidden'); state.dom.authScreen.classList.remove('flex'); },
+            showOnboardingScreen() { this.hideLoading(); this.setReconnectingState(false); state.dom.onboardingScreen?.classList.remove('hidden'); state.dom.onboardingScreen?.classList.add('flex'); state.dom.authScreen?.classList.add('hidden'); state.dom.authScreen?.classList.remove('flex'); state.dom.mainApp.classList.add('hidden'); state.dom.mainApp.classList.remove('md:flex'); },
+            showAuthScreen() { this.hideLoading(); this.setReconnectingState(false); state.dom.onboardingScreen?.classList.add('hidden'); state.dom.onboardingScreen?.classList.remove('flex'); state.dom.authScreen.classList.remove('hidden'); state.dom.authScreen.classList.add('flex'); state.dom.mainApp.classList.add('hidden'); state.dom.mainApp.classList.remove('md:flex'); },
+            showApp() { this.hideLoading(); state.dom.onboardingScreen?.classList.add('hidden'); state.dom.onboardingScreen?.classList.remove('flex'); state.dom.mainApp.classList.remove('hidden'); state.dom.mainApp.classList.add('md:flex'); state.dom.authScreen.classList.add('hidden'); state.dom.authScreen.classList.remove('flex'); },
             updateUiForAuthState(isAuthenticated) {
                 const elementsToToggle = [state.dom.createChannelButton, state.dom.messageInputContainer, state.dom.fileUploadButton, state.dom.sendButton, state.dom.messageInput, state.dom.voiceCallButton];
                 if (isAuthenticated) {
@@ -3779,6 +5072,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     const listItem = this.createListItem(itemData);
                     state.dom.contactsList.appendChild(listItem);
                 });
+                initTgsPlayers(state.dom.contactsList).catch(() => {});
                 this.updateSidebarSelectionHeader();
             },
             createListItem(itemData) {
@@ -3797,7 +5091,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 if(isChannel) { name = chat.chatName; avatar = generateAvatar(name, chat.chatId, chat.avatarUrl, true); } 
                 else if (chat.chatType === 'saved') { name = chat.chatName || 'Saved Messages'; avatar = generateSavedMessagesAvatar(); }
                 else if (isUser) { name = user.username; avatar = generateAvatar(name, user.userId, user.avatarUrl); } 
-                else { name = chat.chatName; avatar = generateAvatar(name, chat.chatId, null); }
+                else { name = chat.chatName; avatar = generateAvatar(name, chat.chatId, chat.avatarUrl); }
                 const isVerified = isUser ? Boolean(user?.isVerified) : Boolean(chat?.isVerified);
 
                 let holdTimer = null;
@@ -3887,15 +5181,16 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                                                     else if (content.starGiveaway) lastMessageText = `${escapeHtml(senderName)}: ${escapeHtml(t('wallet.giveawayPosted', 'Giveaway posted'))}`;
                                                     else if (content.giftGiveaway) lastMessageText = `${escapeHtml(senderName)}: <i class="fas fa-gift mr-1"></i> ${escapeHtml(content.giftGiveaway.gift?.name || t('gift.giftGiveaway', 'Gift Giveaway'))}`;
                                                     else if (content.theme) lastMessageText = `${escapeHtml(senderName)}: <i class="fas fa-palette mr-1"></i> ${escapeHtml(content.theme.name || t('message.themeFallback', 'Theme'))}`;
+                                                    else if (content.poll) lastMessageText = `${escapeHtml(senderName)}: <i class="fas fa-square-poll-vertical mr-1"></i> ${escapeHtml(content.poll.question || t('polls.title', 'Poll'))}`;
                                                     else if (content.file) lastMessageText = `${escapeHtml(senderName)}: <i class="fas fa-paperclip mr-1"></i> ${escapeHtml(content.text || content.file.name)}`;
                                                     else if (displayText) lastMessageText = `${isChannel ? '' : escapeHtml(senderName) + ': '}${escapeHtml(displayText)}`;
 												} else if (user && !state.isReconnecting) {
 									lastMessageText = user.online ? `<span class="app-status-online">${escapeHtml(t('presence.online', 'Online'))}</span>` : escapeHtml(getPresenceLabel(user, t('presence.online', 'Online')));
 								}                
-                const nameHtml = renderDisplayName(name, isVerified, Boolean(user?.isBot));
+                const nameHtml = renderDisplayName(name, isVerified, Boolean(user?.isBot), user?.membershipTier, user?.nicknameFont, user?.premiumStarIcon);
                 const avatarMarkup = isUser
                     ? `<button type="button" class="relative mr-4 w-12 h-12 flex-shrink-0 user-profile-trigger border-0 bg-transparent p-0" data-user-id="${escapeAttr(user.userId)}" title="${escapeAttr(t('profile.viewProfile', 'View Profile'))}"><div class="w-12 h-12 avatar-circle" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>${isSelected ? '<div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center"><i class="fas fa-check"></i></div>' : ''}</button>`
-                    : `<div class="relative mr-4 w-12 h-12 flex-shrink-0"><div class="w-12 h-12 avatar-circle ${isChannel ? 'rounded-md' : ''}" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>${isSelected ? '<div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center"><i class="fas fa-check"></i></div>' : ''}</div>`;
+                    : `<div class="relative mr-4 w-12 h-12 flex-shrink-0"><div class="w-12 h-12 avatar-circle" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div>${isSelected ? '<div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center"><i class="fas fa-check"></i></div>' : ''}</div>`;
                 item.innerHTML = `${avatarMarkup}<div class="flex-1 overflow-hidden"><div class="flex justify-between items-center"><h3 class="font-semibold truncate flex items-center">${nameHtml}</h3>${chat.unreadCount > 0 ? `<div class="app-badge-unread text-xs font-bold rounded-full h-5 min-w-[1.25rem] px-1 flex items-center justify-center">${chat.unreadCount}</div>` : ''}</div><p class="text-sm app-text-muted truncate">${lastMessageText}</p></div>`;
                 item.querySelector('.user-profile-trigger')?.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -3979,6 +5274,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                             originalTextPreview = `<i class="fas fa-gift"></i> ${escapeHtml(originalMsg.giftGiveaway.gift?.name || t('gift.giftGiveaway', 'Gift Giveaway'))}`;
                         } else if (originalMsg.theme) {
                             originalTextPreview = `<i class="fas fa-palette"></i> ${escapeHtml(tr('message.themeSummary', 'Theme: {name}', { name: originalMsg.theme.name || t('message.themeFallback', 'Theme') }))}`;
+                        } else if (originalMsg.poll) {
+                            originalTextPreview = `<i class="fas fa-square-poll-vertical"></i> ${escapeHtml(originalMsg.poll.question || t('polls.title', 'Poll'))}`;
                         } else if (originalMsg.file) {
                             originalTextPreview = `<i class="fas fa-paperclip"></i> ${originalMsg.file.name || 'File'}`;
                         } else {
@@ -4047,6 +5344,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         <p class="text-sm mb-4">${themeDescription}</p>
                         <button class="w-full btn-accent font-bold py-2 px-4 rounded-lg interactive-pop btn-apply-theme" data-action="apply-theme">Apply Theme</button>
                     </div>`;
+                } else if (msg.poll) {
+                    messageBody = renderPollCard(msg);
                 } else if(msg.file) {
                     if (typeof msg.file === 'object' && msg.file !== null && msg.file.url) {
                         const url = msg.file.url, name = msg.file.name || 'download', type = msg.file.type || '';
@@ -4185,7 +5484,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         if (canViewSeenBy(msg)) actionsHtml += `<button class="action-seen-by message-action-button p-2 rounded-full" title="${escapeAttr(t('seenBy.title', 'Seen By'))}"><i class="fas fa-eye"></i></button>`;
                         if (isPrivateChat || isChannelOwner) actionsHtml += `<button class="action-pin message-action-button p-2 rounded-full" title="${escapeAttr(t('messageActions.pin', 'Pin Message'))}"><i class="fas fa-thumbtack"></i></button>`;
                         if (isSender || isChannelOwner) {
-                             if(isSender) actionsHtml += `<button class="action-edit message-action-button p-2 rounded-full ${(msg.file || msg.theme || msg.starGiveaway || msg.giftGiveaway || msg.callLog) ? 'hidden' : ''}" title="${escapeAttr(t('messageActions.edit', 'Edit'))}"><i class="fas fa-pen"></i></button>`;
+                             if(isSender) actionsHtml += `<button class="action-edit message-action-button p-2 rounded-full ${(msg.file || msg.theme || msg.poll || msg.starGiveaway || msg.giftGiveaway || msg.callLog) ? 'hidden' : ''}" title="${escapeAttr(t('messageActions.edit', 'Edit'))}"><i class="fas fa-pen"></i></button>`;
                             actionsHtml += `<button class="action-delete message-action-button message-action-button-danger p-2 rounded-full" title="${escapeAttr(t('messageActions.delete', 'Delete'))}"><i class="fas fa-trash"></i></button>`;
                         }
                     } else if (canDeleteMessage(msg)) {
@@ -4196,7 +5495,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     }
                 }
                 const showSenderName = (!isSender && !isCallLog && state.currentChat.chatType === 'group' && sender) && !isChannel;
-                const senderNameHtml = showSenderName ? `<button type="button" class="message-sender-trigger border-0 bg-transparent p-0 text-xs font-bold app-accent-text mb-1 flex items-center text-left hover:underline" data-user-id="${escapeAttr(sender.userId)}">${renderDisplayName(sender.username, Boolean(sender.isVerified), Boolean(sender.isBot))}</button>` : '';
+                const senderNameHtml = showSenderName ? `<button type="button" class="message-sender-trigger border-0 bg-transparent p-0 text-xs font-bold app-accent-text mb-1 flex items-center text-left hover:underline" data-user-id="${escapeAttr(sender.userId)}">${renderDisplayName(sender.username, Boolean(sender.isVerified), Boolean(sender.isBot), sender.membershipTier, sender.nicknameFont, sender.premiumStarIcon)}</button>` : '';
                 const messageContentClass = isCallLog
                     ? 'message-content max-w-md lg:max-w-lg min-w-0'
                     : hasVisualMedia
@@ -4234,20 +5533,21 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     
                     if (!Array.isArray(urls) || urls.length === 0) return;
                     
-                    // Show loading state
-                    embedContainer.textContent = 'Loading preview...';
-                    
-                    // Only load the first URL to avoid clutter
                     const url = urls[0];
+                    const isSender = messageEl.classList.contains('justify-end');
+                    if (isDirectImageUrl(url) || isDirectVideoUrl(url)) {
+                        embedContainer.innerHTML = sanitizeRichHtml(this.createUrlEmbedHtml({ url }, isSender));
+                        return;
+                    }
+
+                    embedContainer.textContent = 'Loading preview...';
                     const metadata = await getUrlMetadata(url);
                     
                     if (metadata) {
-                        const isSender = messageEl.classList.contains('justify-end');
                         const embedHtml = this.createUrlEmbedHtml(metadata, isSender);
                         embedContainer.innerHTML = sanitizeRichHtml(embedHtml);
                     } else {
                         // If no metadata, show a simple link card as fallback
-                        const isSender = messageEl.classList.contains('justify-end');
                         embedContainer.innerHTML = sanitizeRichHtml(this.createUrlEmbedHtml({
                             title: new URL(url).hostname,
                             description: '',
@@ -4295,10 +5595,26 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     initTgsPlayers(embedNode).catch(() => {});
                 }
             },
-			
-			createUrlEmbedHtml(metadata, isSender) {
-				const safeUrl = sanitizeLinkUrl(metadata.url);
+            createUrlEmbedHtml(metadata, isSender) {
+                const safeUrl = sanitizeLinkUrl(metadata.url);
                 if (!safeUrl) return '';
+                const senderClass = isSender ? 'url-embed-outgoing' : 'url-embed-incoming';
+                if (isDirectVideoUrl(safeUrl)) {
+                    return `<div class="url-embed ${senderClass} url-embed-media my-2 max-w-2xl">
+                        <div class="url-embed-media-frame">
+                            <video class="url-embed-video" controls preload="metadata" playsinline src="${escapeAttr(safeUrl)}"></video>
+                        </div>
+                        <a href="${escapeAttr(safeUrl)}" class="url-embed-site-text block px-3 pb-3 pt-2" target="_blank" rel="noopener noreferrer">${escapeHtml(new URL(safeUrl).hostname)}</a>
+                    </div>`;
+                }
+                if (isDirectImageUrl(safeUrl)) {
+                    return `<a href="${escapeAttr(safeUrl)}" class="url-embed ${senderClass} url-embed-media block my-2 max-w-2xl" target="_blank" rel="noopener noreferrer">
+                        <div class="url-embed-media-frame">
+                            <img src="${escapeAttr(safeUrl)}" alt="${escapeAttr(metadata.title || 'Image')}" class="url-embed-image url-embed-image-full" loading="lazy">
+                        </div>
+                        <div class="px-3 pb-3 pt-2 text-xs url-embed-site-text">${escapeHtml(new URL(safeUrl).hostname)}</div>
+                    </a>`;
+                }
                 const aparatVideoId = extractAparatVideoId(safeUrl);
                 if (aparatVideoId) {
                     const embedUrl = `https://www.aparat.com/video/video/embed/videohash/${encodeURIComponent(aparatVideoId)}/vt/frame?titleShow=true`;
@@ -4321,7 +5637,6 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 
                 const safeImage = sanitizeMediaUrl(metadata.image);
 				const imageHtml = safeImage ? `<img src="${escapeAttr(safeImage)}" alt="${escapeAttr(metadata.title || 'Link')}" class="w-full h-32 object-cover">` : '';
-				const senderClass = isSender ? 'url-embed-outgoing' : 'url-embed-incoming';
 				return `<a href="${escapeAttr(safeUrl)}" class="url-embed ${senderClass} block my-2 rounded-lg overflow-hidden shadow-md transition max-w-md">
 					${imageHtml}
 					<div class="p-3">
@@ -4376,6 +5691,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         const targetBtn = e.currentTarget;
                         targetBtn.disabled = true;
                         try {
+                            if (isEmailBotCallback(targetBtn.dataset.callbackData) && await handleEmailBotAction(targetBtn.dataset.callbackData, targetBtn.dataset.messageId)) {
+                                return;
+                            }
                             await triggerBotCallback(state.currentChat?.chatId, targetBtn.dataset.messageId, targetBtn.dataset.callbackData);
                         } catch (error) {
                             showErrorModal(t('bot.title', 'Bots'), error.message || t('bot.callbackFailed', 'Could not send that bot action.'));
@@ -4390,6 +5708,27 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     if (msg?.theme?.css) {
                         applyThemeCss(msg.theme.css, true);
                     }
+                });
+                el.querySelectorAll('[data-action="vote-poll"]').forEach((btn) => {
+                    btn.addEventListener('click', async (event) => {
+                        event.preventDefault();
+                        const targetBtn = event.currentTarget;
+                        const targetMessage = findMessage(state.currentChat?.chatId, targetBtn.dataset.messageId || el.dataset.msgId);
+                        if (!targetMessage?.poll?.canVote) return;
+                        targetBtn.disabled = true;
+                        try {
+                            await voteOnPoll(targetBtn.dataset.messageId || el.dataset.msgId, targetBtn.dataset.optionId);
+                        } finally {
+                            window.setTimeout(() => { targetBtn.disabled = false; }, 400);
+                        }
+                    });
+                });
+                el.querySelectorAll('[data-action="view-poll-votes"]').forEach((btn) => {
+                    btn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        const targetMessage = findMessage(state.currentChat?.chatId, event.currentTarget.dataset.messageId || el.dataset.msgId);
+                        if (targetMessage) openPollVotesModal(targetMessage);
+                    });
                 });
                 el.querySelector('.action-cancel-pending[data-action="cancel-pending"]')?.addEventListener('click', (e) => {
                     const tempId = e.currentTarget.dataset.tempId;
@@ -4544,13 +5883,22 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 state.dom.settingsAvatar.style.backgroundImage = `url(${avatar.url})`;
                 state.dom.settingsAvatar.style.backgroundColor = avatar.color;
                 state.dom.settingsAvatar.innerHTML = avatar.url ? '' : avatar.initial;
-                state.dom.settingsUsername.innerHTML = renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot));
+                state.dom.settingsUsername.innerHTML = renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon, true);
                 state.dom.settingsProfileStatus.textContent = t('settings.yourProfile', 'Your profile');
                 state.dom.settingsProfileBio.textContent = (user.bio || '').trim() || t('settings.noBioYet', 'No bio yet.');
                 state.dom.editUsernameInput.value = user.username || '';
+                if (state.dom.editUsernameFontSelect) state.dom.editUsernameFontSelect.value = normalizeNicknameFont(user.nicknameFont);
+                applyNicknameFontPreview(user.nicknameFont);
+                if (state.dom.profileSkinModeSelect) state.dom.profileSkinModeSelect.value = user.profileSkin?.mode || '';
+                if (state.dom.profileSkinColorPrimary) state.dom.profileSkinColorPrimary.value = user.profileSkin?.mode === 'solid' ? (user.profileSkin.color || '#7c3aed') : (user.profileSkin?.colors?.[0] || '#7c3aed');
+                if (state.dom.profileSkinColorSecondary) state.dom.profileSkinColorSecondary.value = user.profileSkin?.colors?.[1] || '#ec4899';
+                if (state.dom.profileSkinColorTertiary) state.dom.profileSkinColorTertiary.value = user.profileSkin?.colors?.[2] || '#22d3ee';
+                if (state.dom.profileSkinGradientStopsSelect) state.dom.profileSkinGradientStopsSelect.value = (user.profileSkin?.mode === 'gradient' && (user.profileSkin?.colors?.length || 0) >= 3) ? '3' : '2';
+                syncProfileSkinControls(user.profileSkin);
                 if (state.dom.editHandleInput) state.dom.editHandleInput.value = String(user.handle || '').replace(/^@/, '');
                 state.dom.editBioInput.value = user.bio || '';
                 state.dom.settingsProfileCreatedAt.textContent = tr('profile.joinedDate', 'Joined {date}', { date: formatFullDate(user.createdAt) });
+                initTgsPlayers(state.dom.settingsUsername).catch(() => {});
                 state.dom.blockGroupInvitesCheckbox.checked = user.blockGroupInvites || false;
                 const gifts = Array.isArray(user.gifts) ? user.gifts : [];
                 const groups = getSharedGroupChatsForUser(user.userId);
@@ -4663,7 +6011,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     const avatar = generateAvatar(displayName, mergedUser.userId, mergedUser.avatarUrl);
                     state.dom.userInfoAvatar.style.backgroundImage = `url(${avatar.url})`; state.dom.userInfoAvatar.style.backgroundColor = avatar.color;
                     state.dom.userInfoAvatar.innerHTML = avatar.url ? '' : avatar.initial;
-                    state.dom.userInfoUsername.innerHTML = renderDisplayName(displayName, Boolean(mergedUser.isVerified), Boolean(mergedUser.isBot));
+                    state.dom.userInfoUsername.innerHTML = renderDisplayName(displayName, Boolean(mergedUser.isVerified), Boolean(mergedUser.isBot), mergedUser.membershipTier, mergedUser.nicknameFont, mergedUser.premiumStarIcon, true);
                     state.dom.userInfoStatus.textContent = getPresenceLabel(mergedUser, t('presence.onlineNow', 'Online now'));
                     state.dom.userInfoStatus.className = mergedUser.online ? 'profile-sheet-status text-green-600' : 'profile-sheet-status text-gray-400';
                     state.dom.userInfoBio.textContent = (mergedUser.bio || mergedUser.botAbout || '').trim() || t('settings.noBioYet', 'No bio yet.');
@@ -4730,6 +6078,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     state.dom.userInfoMutualGroupsList.innerHTML = renderProfileGroupList(sharedGroups, isSelf ? t('settings.noGroupsYet', 'No groups yet.') : t('profile.noMutualGroups', 'No mutual groups.'));
                     state.dom.userInfoMessageButton.classList.toggle('hidden', isSelf);
                     state.dom.userInfoMessageButton.dataset.userId = isSelf ? '' : (mergedUser.userId || '');
+                    applyProfileSkinToSurface(state.dom.userInfoProfileSheet, mergedUser.profileSkin);
+                    initTgsPlayers(state.dom.userInfoUsername).catch(() => {});
                 };
                 applyProfileData(state.userProfiles[user.userId] || {});
                 setProfileTab('userInfo', 'bio');
@@ -4752,11 +6102,11 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const message = findMessage(state.currentChat.chatId, messageId); if (!message) return;
                 state.messageToForward = message; const listEl = state.dom.forwardContactsList; listEl.innerHTML = '';
                 Object.values(state.allChats).forEach(chat => {
-                    let name, avatar, isChannel = chat.chatType === 'channel';
+                    let name, avatar, isChannel = chat.chatType === 'channel', otherUser = null;
                     if(chat.chatType === 'group' || isChannel) { name = chat.chatName || t('chat.publicLobby', 'Public Lobby'); avatar = generateAvatar(name, chat.chatId, chat.avatarUrl, isChannel); } 
-                else { const otherUserId = chat.members.find(id => id !== state.currentUser.userId), otherUser = state.allUsers[otherUserId]; if(!otherUser) return; name = otherUser.username; avatar = generateAvatar(name, otherUser.userId, otherUser.avatarUrl); }
+                else { const otherUserId = chat.members.find(id => id !== state.currentUser.userId), foundUser = state.allUsers[otherUserId]; if(!foundUser) return; otherUser = foundUser; name = otherUser.username; avatar = generateAvatar(name, otherUser.userId, otherUser.avatarUrl); }
                     const targetVerified = isChannel ? Boolean(chat.isVerified) : Boolean(otherUser?.isVerified);
-                    listEl.insertAdjacentHTML('beforeend', `<label for="fwd_${escapeAttr(chat.chatId)}" class="flex items-center p-2 rounded-lg hover:bg-gray-100 cursor-pointer"><input type="checkbox" id="fwd_${escapeAttr(chat.chatId)}" data-chat-id="${escapeAttr(chat.chatId)}" class="mr-4 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"><div class="w-10 h-10 avatar-circle ${isChannel ? 'rounded-md' : ''} mr-3" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div><span class="font-semibold">${isChannel ? renderPlainDisplayName(name, targetVerified) : renderDisplayName(name, targetVerified, Boolean(otherUser?.isBot))}</span></label>`);
+                    listEl.insertAdjacentHTML('beforeend', `<label for="fwd_${escapeAttr(chat.chatId)}" class="flex items-center p-2 rounded-lg hover:bg-gray-100 cursor-pointer"><input type="checkbox" id="fwd_${escapeAttr(chat.chatId)}" data-chat-id="${escapeAttr(chat.chatId)}" class="mr-4 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"><div class="w-10 h-10 avatar-circle mr-3" style="background-image: url(${escapeAttr(avatar.url)}); background-color: ${avatar.color};">${avatar.initial}</div><span class="font-semibold">${isChannel ? renderPlainDisplayName(name, targetVerified) : renderDisplayName(name, targetVerified, Boolean(otherUser?.isBot), otherUser?.membershipTier, otherUser?.nicknameFont, otherUser?.premiumStarIcon)}</span></label>`);
                 });
                 this.openModal(state.dom.forwardMessageModal);
             },
@@ -4836,7 +6186,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         : (parsed.file ? `<i class="fas fa-paperclip"></i> ${escapeHtml(truncateInlinePreview(parsed.file.name || t('message.fileFallback', 'File'), 80))}` : escapeHtml(truncateInlinePreview(parsed.text || '', 140)));
                     const pinnedSenderName = getMessageSenderName(msg, chat);
                     const pinnedSenderVerified = isMessageSenderVerified(msg, chat);
-                    state.dom.pinnedMessageContent.innerHTML = `<b>${renderDisplayName(pinnedSenderName, pinnedSenderVerified)}:</b> ${previewText}`;
+                    state.dom.pinnedMessageContent.innerHTML = `<b>${renderDisplayName(pinnedSenderName, pinnedSenderVerified, Boolean(sender?.isBot), sender?.membershipTier, sender?.nicknameFont, sender?.premiumStarIcon)}:</b> ${previewText}`;
                     state.dom.pinnedMessageBar.classList.remove('hidden'); state.dom.pinnedMessageBar.classList.add('flex');
                 } else { state.dom.pinnedMessageBar.classList.add('hidden'); state.dom.pinnedMessageBar.classList.remove('flex'); }
             },
@@ -4846,9 +6196,13 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const isUserInCall = state.currentVoiceChatId === chatId;
                 const isConnectingToChat = state.voiceConnectionState === 'connecting' && state.connectingVoiceChatId === chatId;
                 const isCurrentChatCall = isUserInCall || isConnectingToChat;
+                const availableScreenShareOwnerIds = Array.isArray(state.availableScreenShareOwnerIds)
+                    ? state.availableScreenShareOwnerIds.filter(Boolean)
+                    : [];
                 const screenShareOwnerId = state.currentScreenShareOwnerId;
                 const screenShareOwner = screenShareOwnerId ? state.allUsers[screenShareOwnerId] : null;
                 const isScreenShareVisible = Boolean(isCurrentChatCall && screenShareOwnerId);
+                const hasMultipleScreenShares = availableScreenShareOwnerIds.length > 1;
                 const voiceChatModule = getVoiceChatModule();
                 const activeSpeakers = new Set(voiceChatModule?.getState?.().activeSpeakers || []);
                 
@@ -4865,7 +6219,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     callButton.title = t('chat.startVoice', 'Start Voice Chat');
                 }
 
-                if (!state.dom.callStatusLabel || !state.dom.callStatusMeta || !state.dom.callScreenStage || !state.dom.toggleScreenShareButton || !state.dom.toggleMuteButton || !state.dom.toggleDeafenButton || !state.dom.toggleCallStageButton) return;
+                if (!state.dom.callStatusLabel || !state.dom.callStatusMeta || !state.dom.callScreenStage || !state.dom.toggleScreenShareButton || !state.dom.toggleScreenShareQualityButton || !state.dom.toggleMuteButton || !state.dom.toggleDeafenButton || !state.dom.toggleCallStageButton) return;
 
                 state.dom.callStatusLabel.textContent = isConnectingToChat
                     ? t('voice.connecting', 'Connecting...')
@@ -4881,6 +6235,12 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 state.dom.toggleScreenShareButton.title = state.isLocalScreenSharing
                     ? t('voice.stopScreenShare', 'Stop sharing')
                     : t('voice.startScreenShare', 'Share screen');
+                const isPremium = String(state.currentUser?.membershipTier || '').toLowerCase() === 'premium';
+                state.dom.toggleScreenShareQualityButton.classList.toggle('hidden', !isUserInCall || !isPremium);
+                state.dom.toggleScreenShareQualityButton.textContent = state.preferredScreenShareQuality === '720p' ? '720p' : '480p';
+                state.dom.toggleScreenShareQualityButton.title = tr('voice.screenShareQuality', 'Screen share quality: {quality}', {
+                    quality: state.preferredScreenShareQuality === '720p' ? '720p' : '480p'
+                });
                 state.dom.toggleMuteButton.classList.toggle('hidden', !isUserInCall);
                 state.dom.toggleMuteButton.classList.toggle('is-active', Boolean(state.isVoiceMuted));
                 state.dom.toggleMuteButton.title = state.isVoiceMuted
@@ -4919,8 +6279,10 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         const user = state.allUsers[userId];
                         if (user) {
                             const avatar = generateAvatar(user.username, user.userId, user.avatarUrl);
+                            const isSharingScreen = availableScreenShareOwnerIds.includes(userId);
+                            const isSelectedScreen = screenShareOwnerId === userId;
                             const avatarEl = document.createElement('div');
-                            avatarEl.className = `voice-call-participant-pill ${activeSpeakers.has(userId) ? 'is-speaking' : ''}`;
+                            avatarEl.className = `voice-call-participant-pill ${activeSpeakers.has(userId) ? 'is-speaking' : ''} ${isSharingScreen ? 'is-screen-sharing' : ''} ${isSelectedScreen ? 'is-screen-selected' : ''}`;
                             const avatarNode = document.createElement('div');
                             avatarNode.className = 'avatar-circle voice-participant-avatar ring-2 ring-white transition-shadow duration-300';
                             avatarNode.style.backgroundImage = `url(${avatar.url})`;
@@ -4930,9 +6292,26 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                             avatarNode.dataset.userId = userId;
                             const labelNode = document.createElement('div');
                             labelNode.className = 'voice-call-participant-pill-name';
-                            labelNode.textContent = userId === state.currentUser?.userId ? t('voice.you', 'You') : user.username;
+                            labelNode.innerHTML = userId === state.currentUser?.userId
+                                ? escapeHtml(t('voice.you', 'You'))
+                                : renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon);
                             avatarEl.appendChild(avatarNode);
                             avatarEl.appendChild(labelNode);
+                            if (isSharingScreen) {
+                                const badgeNode = document.createElement('div');
+                                badgeNode.className = 'voice-call-participant-badge';
+                                badgeNode.innerHTML = `<i class="fas fa-display"></i>`;
+                                avatarEl.appendChild(badgeNode);
+                            }
+                            if (hasMultipleScreenShares && isSharingScreen && voiceChatModule?.setScreenShareOwner) {
+                                avatarEl.classList.add('is-clickable');
+                                avatarEl.title = user.username;
+                                avatarEl.addEventListener('click', () => {
+                                    voiceChatModule.setScreenShareOwner(userId);
+                                    state.isCallStageMinimized = false;
+                                    ui.renderVoiceUI(chatId);
+                                });
+                            }
                             participantsContainer.appendChild(avatarEl);
                         }
                     });
@@ -4972,7 +6351,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 state.dom.incomingCallAvatar.textContent = callerAvatar.initial;
                 state.dom.incomingCallName.textContent = callData.callerName;
                 state.dom.incomingCallChatName.textContent = tr('voice.inChat', 'in {chat}', { chat: callData.chatName });
-                if (!isUserMutedLocally(callData.callerId)) startIncomingCallSound();
+                if (!isUserMutedLocally(callData.callerId) && !isChatMutedLocally(callData.chatId)) startIncomingCallSound();
                 this.openModal(state.dom.incomingCallModal);
             },
             closeIncomingCallModal() {
@@ -5025,7 +6404,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 filtered.forEach(user => {
                     const displayName = getUserDisplayName(user, user.userId);
                     const avatar = generateAvatar(displayName, user.userId, user.avatarUrl);
-                    const nameHtml = renderDisplayName(displayName, Boolean(user.isVerified), Boolean(user.isBot));
+                    const nameHtml = renderDisplayName(displayName, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon);
                     
                     const el = document.createElement('div');
                     el.className = 'flex items-center p-3 rounded-lg transition border-b border-gray-100 gap-3 hover:bg-blue-50';
@@ -5141,6 +6520,381 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 throw new Error(payload?.error || `Request failed (${response.status})`);
             }
             return payload;
+        }
+
+        async function unauthenticatedJsonFetch(path, body = {}) {
+            const response = await fetch(resolveServerUrl(path), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.error) {
+                throw new Error(payload?.error || `Request failed (${response.status})`);
+            }
+            return payload;
+        }
+
+        function resolveCaptchaProxyUrl(targetPath) {
+            return `/puzzle.php?proxy=1&target=${encodeURIComponent(String(targetPath || ''))}`;
+        }
+
+        async function captchaProxyJsonFetch(targetPath, body = {}, headers = {}) {
+            const response = await fetch(resolveCaptchaProxyUrl(targetPath), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...headers
+                },
+                body: JSON.stringify(body)
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.error) {
+                throw new Error(payload?.error || `Request failed (${response.status})`);
+            }
+            return payload;
+        }
+
+        function resolveCaptchaFrameUrl(path, sessionId) {
+            void path;
+            return `/puzzle.php?captchaSessionId=${encodeURIComponent(sessionId || '')}`;
+        }
+
+        async function runCaptchaGate(action, extra = {}) {
+            if (state.captchaPromise) return state.captchaPromise;
+            const needsAuth = !['login', 'register'].includes(String(action || '').trim().toLowerCase());
+            const starter = needsAuth
+                ? () => captchaProxyJsonFetch('/captcha/start', { action, ...extra }, getAuthHeaders({}) || {})
+                : () => captchaProxyJsonFetch('/captcha/start', { action, ...extra });
+
+            state.captchaPromise = (async () => {
+                try {
+                    const started = await starter();
+                    const modal = state.dom.captchaModal;
+                    const frame = state.dom.captchaFrame;
+                    if (!modal || !frame) throw new Error('Captcha modal is unavailable.');
+                    ui.openModal(modal);
+                    frame.src = resolveCaptchaFrameUrl(started.captchaUrl, started.sessionId);
+
+                    return await new Promise((resolve, reject) => {
+                        let settled = false;
+                        const authHeaders = needsAuth ? (getAuthHeaders({}) || {}) : {};
+                        const cleanup = () => {
+                            window.removeEventListener('message', onMessage);
+                            frame.src = 'about:blank';
+                            ui.closeModal(modal);
+                            state.captchaPromise = null;
+                        };
+                        const finishResolve = (token) => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            resolve(token);
+                        };
+                        const finishReject = (error) => {
+                            if (settled) return;
+                            settled = true;
+                            cleanup();
+                            reject(error);
+                        };
+                        const timeout = window.setTimeout(() => {
+                            finishReject(new Error('Captcha timed out.'));
+                        }, 10 * 60 * 1000);
+                        const onMessage = (event) => {
+                            if (event.origin !== window.location.origin) return;
+                            const data = event.data || {};
+                            if (data.type === 'captcha-frame-ready' && data.sessionId === started.sessionId) {
+                                frame.contentWindow?.postMessage({
+                                    type: 'captcha-parent-auth',
+                                    headers: authHeaders
+                                }, window.location.origin);
+                                return;
+                            }
+                            if (data.type === 'captcha-solved' && data.sessionId === started.sessionId && data.solveToken) {
+                                window.clearTimeout(timeout);
+                                finishResolve(String(data.solveToken));
+                                return;
+                            }
+                            if (data.type === 'captcha-cancelled' && data.sessionId === started.sessionId) {
+                                window.clearTimeout(timeout);
+                                finishReject(new Error('Captcha cancelled.'));
+                                return;
+                            }
+                            if (data.type === 'captcha-failed' && data.sessionId === started.sessionId) {
+                                window.clearTimeout(timeout);
+                                finishReject(new Error('Captcha failed.'));
+                            }
+                        };
+                        window.addEventListener('message', onMessage);
+                    });
+                } catch (error) {
+                    state.captchaPromise = null;
+                    throw error;
+                }
+            })();
+
+            return state.captchaPromise;
+        }
+
+        function getEmailBotUserId() {
+            return Object.values(state.allUsers).find((user) => String(user?.username || '').toLowerCase() === 'email' && user?.isBot)?.userId || '';
+        }
+
+        function getEmailBotPeerId(chat = state.currentChat) {
+            if (!chat || chat.chatType !== 'private') return '';
+            const peerId = getPrivateChatPeerId(chat);
+            const emailBotUserId = getEmailBotUserId();
+            return peerId && emailBotUserId && peerId === emailBotUserId ? peerId : '';
+        }
+
+        function isEmailBotChat(chat = state.currentChat) {
+            return Boolean(getEmailBotPeerId(chat));
+        }
+
+        function isEmailBotCallback(callbackData = '') {
+            return String(callbackData || '').startsWith('email:');
+        }
+
+        async function fetchEmailMail(mailId) {
+            return authenticatedFetch(`/email-service/mail?mailId=${encodeURIComponent(mailId || '')}`);
+        }
+
+        function buildEmailMailViewUrl(mailId, download = false) {
+            const session = getValidSession();
+            if (!session?.token || !state.currentUser?.userId) return 'about:blank';
+            const path = download ? '/email-service/mail/download-html' : '/email-service/mail/view';
+            const query = `mailId=${encodeURIComponent(mailId || '')}&userId=${encodeURIComponent(state.currentUser.userId)}&authToken=${encodeURIComponent(session.token)}`;
+            return resolveServerUrl(`${path}?${query}`);
+        }
+
+        function closeEmailViewerModal() {
+            state.emailViewerContext = null;
+            if (state.dom.emailViewerFrame) state.dom.emailViewerFrame.src = 'about:blank';
+            state.dom.emailViewerTextWrap?.classList.add('hidden');
+            state.dom.emailViewerFrame?.classList.add('hidden');
+            ui.closeModal(state.dom.emailViewerModal);
+        }
+
+        function closeEmailComposerModal() {
+            state.emailComposeContext = null;
+            ui.closeModal(state.dom.emailComposerModal);
+        }
+
+        function closeEmailAddressModal() {
+            ui.closeModal(state.dom.emailAddressModal);
+        }
+
+        function openEmailComposerModal(prefill = {}) {
+            state.emailComposeContext = { ...prefill };
+            state.dom.emailComposeTargetInput.value = String(prefill.toAddress || '');
+            state.dom.emailComposeSubjectInput.value = String(prefill.subject || '');
+            state.dom.emailComposeBodyInput.value = String(prefill.body || '');
+            ui.openModal(state.dom.emailComposerModal);
+            window.setTimeout(() => state.dom.emailComposeTargetInput?.focus(), 20);
+        }
+
+        function openEmailAddressModal() {
+            if (state.dom.emailAddressDomainText) {
+                state.dom.emailAddressDomainText.textContent = `@${String(window.EMAIL_SERVICE_DOMAIN || 'mail.bargmy.ir')}`;
+            }
+            if (state.dom.emailAddressLocalPartInput) {
+                state.dom.emailAddressLocalPartInput.value = '';
+            }
+            ui.openModal(state.dom.emailAddressModal);
+            window.setTimeout(() => state.dom.emailAddressLocalPartInput?.focus(), 20);
+        }
+
+        async function submitEmailAddressCreate() {
+            const localPart = String(state.dom.emailAddressLocalPartInput?.value || '').trim().toLowerCase();
+            if (!localPart) {
+                showErrorModal(t('emailBot.title', 'Email'), t('emailBot.localPartRequired', 'Enter the email name you want.'));
+                return;
+            }
+            const button = state.dom.createEmailAddressButton;
+            if (button) button.disabled = true;
+            try {
+                await authenticatedFetch('/email-service/address/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ localPart }),
+                });
+                closeEmailAddressModal();
+            } catch (error) {
+                showErrorModal(t('emailBot.title', 'Email'), error.message || t('emailBot.createFailed', 'Could not create that email address.'));
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function submitEmailComposer() {
+            const toAddress = state.dom.emailComposeTargetInput?.value?.trim() || '';
+            const subject = state.dom.emailComposeSubjectInput?.value?.trim() || '';
+            const body = state.dom.emailComposeBodyInput?.value || '';
+            if (!toAddress || !body.trim()) {
+                showErrorModal(t('emailBot.title', 'Email'), t('emailBot.composeRequired', 'Enter a target email address and a body.'));
+                return;
+            }
+            const button = state.dom.sendEmailComposerButton;
+            if (button) button.disabled = true;
+            try {
+                await authenticatedFetch('/email-service/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ toAddress, subject, body }),
+                });
+                closeEmailComposerModal();
+            } catch (error) {
+                showErrorModal(t('emailBot.title', 'Email'), error.message || t('emailBot.sendFailed', 'Could not send the email.'));
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function openEmailViewerModal(mailId, sourceMessageId) {
+            const payload = await fetchEmailMail(mailId);
+            const mail = payload?.mail;
+            if (!mail) throw new Error(t('emailBot.mailMissing', 'Could not load that email.'));
+            state.emailViewerContext = {
+                mailId,
+                sourceMessageId: sourceMessageId || '',
+                replyCallbackData: `email:reply:${mailId}`,
+                deleteCallbackData: `email:mail:delete:${mailId}`,
+                blockCallbackData: `email:mail:block:${mailId}`,
+                fromAddress: mail.fromAddress || '',
+                subject: mail.subject || '',
+            };
+            state.dom.emailViewerTitle.textContent = mail.subject || t('emailBot.viewerTitle', 'Email');
+            state.dom.emailViewerMeta.textContent = `${mail.fromAddress || ''} • ${formatFullDate(mail.receivedAt || 0)}`;
+            if (mail.isHtml) {
+                state.dom.emailViewerTextWrap?.classList.add('hidden');
+                state.dom.emailViewerFrame?.classList.remove('hidden');
+                state.dom.emailViewerFrame.src = buildEmailMailViewUrl(mailId, false);
+            } else {
+                state.dom.emailViewerFrame?.classList.add('hidden');
+                state.dom.emailViewerTextWrap?.classList.remove('hidden');
+                state.dom.emailViewerTextContent.textContent = mail.textBody || '';
+            }
+            ui.openModal(state.dom.emailViewerModal);
+        }
+
+        async function handleEmailBotAction(callbackData, messageId) {
+            const action = String(callbackData || '');
+            if (action === 'email:menu:create') {
+                openEmailAddressModal();
+                return true;
+            }
+            if (action === 'email:compose') {
+                openEmailComposerModal();
+                return true;
+            }
+            if (action.startsWith('email:reply:')) {
+                const mailId = action.split(':').pop();
+                const payload = await fetchEmailMail(mailId);
+                const mail = payload?.mail || {};
+                const subject = String(mail.subject || '').trim();
+                openEmailComposerModal({
+                    toAddress: mail.fromAddress || '',
+                    subject: subject.toLowerCase().startsWith('re:') ? subject : `Re: ${subject || ''}`.trim(),
+                });
+                return true;
+            }
+            if (action.startsWith('email:view:')) {
+                await openEmailViewerModal(action.split(':').pop(), messageId);
+                return true;
+            }
+            if (action.startsWith('email:save_html:')) {
+                window.open(buildEmailMailViewUrl(action.split(':').pop(), true), '_blank', 'noopener');
+                return true;
+            }
+            return false;
+        }
+
+        function getPendingDmCaptchaRecipientId() {
+            if (state.currentChat?.chatId?.startsWith('temp_')) {
+                const recipientId = state.currentChat.members?.find((id) => id !== state.currentUser?.userId);
+                if (recipientId && !state.allUsers[recipientId]?.isBot) return recipientId;
+            }
+            if (state.pendingRecipientId && !state.allUsers[state.pendingRecipientId]?.isBot) {
+                return state.pendingRecipientId;
+            }
+            return '';
+        }
+
+        async function handleDmCaptchaRequiredError(serverMessage) {
+            if (!/captcha required before starting a new dm/i.test(String(serverMessage || ''))) return false;
+            const recipientId = getPendingDmCaptchaRecipientId();
+            if (!recipientId) return false;
+            ui.hideLoading();
+            try {
+                await runCaptchaGate('dm_start', { targetUserId: recipientId });
+            } catch (_) {}
+            return true;
+        }
+
+        function renderOnboarding() {
+            const slide = ONBOARDING_SLIDES[state.onboardingIndex] || ONBOARDING_SLIDES[0];
+            if (state.dom.onboardingIcon) state.dom.onboardingIcon.innerHTML = slide.icon;
+            if (state.dom.onboardingDescription) state.dom.onboardingDescription.textContent = t(slide.descriptionKey, '');
+            if (state.dom.onboardingDots) {
+                state.dom.onboardingDots.textContent = ONBOARDING_SLIDES.map((_, index) => (index === state.onboardingIndex ? '●' : '○')).join(' ');
+            }
+        }
+
+        function animateOnboardingTo(nextIndex, direction = 1) {
+            if (state.onboardingAnimating) return;
+            const boundedIndex = Math.max(0, Math.min(ONBOARDING_SLIDES.length - 1, nextIndex));
+            if (boundedIndex === state.onboardingIndex) return;
+            const iconEl = state.dom.onboardingIcon;
+            const descEl = state.dom.onboardingDescription;
+            const dotsEl = state.dom.onboardingDots;
+            if (!iconEl || !descEl || !dotsEl || !iconEl.animate || !descEl.animate) {
+                state.onboardingIndex = boundedIndex;
+                renderOnboarding();
+                return;
+            }
+            state.onboardingAnimating = true;
+            const travel = direction >= 0 ? -28 : 28;
+            iconEl.animate([
+                { opacity: 1, transform: 'translateX(0) scale(1) rotate(0deg)' },
+                { opacity: 0.18, transform: `translateX(${travel}px) scale(0.78) rotate(${direction >= 0 ? -24 : 24}deg)` }
+            ], { duration: 170, easing: 'ease-in', fill: 'forwards' });
+            descEl.animate([
+                { opacity: 1, transform: 'translateX(0)' },
+                { opacity: 0, transform: `translateX(${travel * 1.4}px)` }
+            ], { duration: 170, easing: 'ease-in', fill: 'forwards' });
+            dotsEl.animate([{ opacity: 1 }, { opacity: 0.35 }], { duration: 170, easing: 'ease-in', fill: 'forwards' });
+            window.setTimeout(() => {
+                state.onboardingIndex = boundedIndex;
+                renderOnboarding();
+                iconEl.animate([
+                    { opacity: 0.2, transform: `translateX(${-travel}px) scale(0.8) rotate(${direction >= 0 ? 24 : -24}deg)` },
+                    { opacity: 1, transform: 'translateX(0) scale(1) rotate(0deg)' }
+                ], { duration: 260, easing: 'ease-out', fill: 'forwards' });
+                descEl.animate([
+                    { opacity: 0, transform: `translateX(${-travel * 1.4}px)` },
+                    { opacity: 1, transform: 'translateX(0)' }
+                ], { duration: 260, easing: 'ease-out', fill: 'forwards' });
+                dotsEl.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 220, easing: 'ease-out', fill: 'forwards' });
+                window.setTimeout(() => {
+                    state.onboardingAnimating = false;
+                }, 270);
+            }, 175);
+        }
+
+        function moveOnboarding(direction = 1) {
+            if (state.onboardingAnimating) return;
+            const nextIndex = state.onboardingIndex + direction;
+            if (nextIndex < 0) return;
+            if (nextIndex >= ONBOARDING_SLIDES.length) {
+                finishOnboarding();
+                return;
+            }
+            animateOnboardingTo(nextIndex, direction);
+        }
+
+        function finishOnboarding() {
+            getStorage().saveOnboardingSeen();
+            ui.showAuthScreen();
         }
 
         function isCurrentChatActivelyVisible() {
@@ -5555,6 +7309,87 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return state.userProfiles[userId];
         }
 
+        let premiumProfileAssetsCache = null;
+
+        async function loadPremiumProfileAssets(force = false) {
+            if (!force && premiumProfileAssetsCache) return premiumProfileAssetsCache;
+            const payload = await authenticatedFetch('/user/premium/profile-assets');
+            premiumProfileAssetsCache = {
+                stickers: Array.isArray(payload?.stickers) ? payload.stickers.map((entry) => normalizePremiumStarIcon({ ...entry, source: 'saved' })).filter(Boolean) : [],
+                templates: Array.isArray(payload?.templates) ? payload.templates.map((entry) => normalizePremiumStarIcon({ ...entry, source: 'template', templateId: entry?.id || '' })).filter(Boolean) : []
+            };
+            return premiumProfileAssetsCache;
+        }
+
+        function renderPremiumStarPickerGrid() {
+            const grid = state.dom.premiumStarPickerGrid;
+            const status = state.dom.premiumStarPickerStatus;
+            if (!grid || !status) return;
+            const sourceKey = state.premiumStarPickerSource === 'templates' ? 'templates' : 'stickers';
+            const items = premiumProfileAssetsCache?.[sourceKey] || [];
+            state.dom.premiumStarSourceStickers?.classList.toggle('btn-accent', sourceKey === 'stickers');
+            state.dom.premiumStarSourceTemplates?.classList.toggle('btn-accent', sourceKey === 'templates');
+            state.dom.premiumStarSourceStickers?.classList.toggle('profile-sheet-secondary-button', sourceKey !== 'stickers');
+            state.dom.premiumStarSourceTemplates?.classList.toggle('profile-sheet-secondary-button', sourceKey !== 'templates');
+            status.textContent = items.length
+                ? t('profile.premiumStarPickerHint', 'Pick one item for your premium badge.')
+                : (sourceKey === 'templates' ? t('profile.noPremiumStarTemplates', 'No templates found.') : t('profile.noSavedStickers', 'No saved stickers found.'));
+            grid.innerHTML = items.length ? items.map((item, index) => {
+                const isSelected = (state.premiumStarPickerSelection?.url || '') === item.url && (state.premiumStarPickerSelection?.source || '') === item.source;
+                return `
+                    <button type="button" class="premium-star-picker-item ${isSelected ? 'is-selected' : ''}" data-premium-star-index="${index}">
+                        <span class="premium-star-picker-preview">${item.type === 'tgs' ? createTgsMarkup(item.url, 'Premium', 'premium-star-picker-media') : `<img src="${escapeAttr(item.url)}" alt="${escapeAttr(t('premium.title', 'Premium'))}" class="premium-star-picker-media">`}</span>
+                    </button>
+                `;
+            }).join('') : `<div class="profile-sheet-empty">${escapeHtml(status.textContent)}</div>`;
+            grid.querySelectorAll('[data-premium-star-index]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const nextItem = items[Number(button.dataset.premiumStarIndex)];
+                    state.premiumStarPickerSelection = nextItem ? { ...nextItem } : null;
+                    commitPremiumStarPickerSelection();
+                });
+            });
+            initTgsPlayers(grid).catch(() => {});
+        }
+
+        async function openPremiumStarPickerModal() {
+            const currentUser = state.allUsers[state.currentUser?.userId];
+            if (!currentUser) return;
+            if (String(currentUser.membershipTier || '').toLowerCase() !== 'premium') {
+                openPremiumModal();
+                return;
+            }
+            state.premiumStarPickerSelection = normalizePremiumStarIcon(currentUser.premiumStarIcon);
+            state.premiumStarPickerSource = state.premiumStarPickerSelection?.source === 'template' ? 'templates' : 'stickers';
+            ui.openModal(state.dom.premiumStarPickerModal);
+            if (state.dom.premiumStarPickerStatus) state.dom.premiumStarPickerStatus.textContent = t('loading.updating', 'Updating...');
+            if (state.dom.premiumStarPickerGrid) state.dom.premiumStarPickerGrid.innerHTML = '';
+            state.dom.savePremiumStarPickerButton?.classList.add('hidden');
+            try {
+                await loadPremiumProfileAssets(!premiumProfileAssetsCache);
+                renderPremiumStarPickerGrid();
+            } catch (error) {
+                if (state.dom.premiumStarPickerStatus) state.dom.premiumStarPickerStatus.textContent = error.message || t('profile.premiumStarLoadFailed', 'Could not load premium star assets.');
+                if (state.dom.premiumStarPickerGrid) state.dom.premiumStarPickerGrid.innerHTML = `<div class="profile-sheet-empty">${escapeHtml(state.dom.premiumStarPickerStatus.textContent)}</div>`;
+            }
+        }
+
+        function closePremiumStarPickerModal() {
+            ui.closeModal(state.dom.premiumStarPickerModal);
+        }
+
+        function commitPremiumStarPickerSelection() {
+            const currentUser = state.allUsers[state.currentUser?.userId];
+            if (!currentUser || state.socket?.readyState !== WebSocket.OPEN) return;
+            state.socket.send(JSON.stringify({ type: 'update_profile', premiumStarIcon: state.premiumStarPickerSelection || null }));
+            const nextIcon = state.premiumStarPickerSelection ? { ...state.premiumStarPickerSelection } : null;
+            state.allUsers[state.currentUser.userId] = { ...currentUser, premiumStarIcon: nextIcon };
+            state.currentUser = { ...state.currentUser, premiumStarIcon: nextIcon };
+            ui.populateSettingsProfile(state.allUsers[state.currentUser.userId]);
+            ui.renderContactList();
+            closePremiumStarPickerModal();
+        }
+
         function extractGiftLinkIds(text) {
             if (!text) return [];
             const matches = [];
@@ -5777,17 +7612,47 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 				e.preventDefault();
 				sendMessage();
 			});
-            state.dom.fileUploadButton.addEventListener('click', () => state.dom.fileInput.click());
+            state.dom.fileUploadButton.addEventListener('click', () => {
+                const isHidden = state.dom.attachMenuPanel?.classList.contains('hidden');
+                if (isHidden) {
+                    openAttachMenuPanel();
+                } else {
+                    closeAttachPanels();
+                }
+            });
             state.dom.fileInput.addEventListener('change', (e) => ui.showFilePreview(e.target.files[0]));
+            state.dom.closeAttachMenuButton?.addEventListener('click', () => closeAttachPanels());
+            state.dom.attachMenuFileButton?.addEventListener('click', () => {
+                closeAttachPanels();
+                state.dom.fileInput.click();
+            });
+            state.dom.attachMenuPollButton?.addEventListener('click', () => openPollComposerPanel());
+            state.dom.closePollComposerButton?.addEventListener('click', () => closeAttachPanels());
+            state.dom.addPollOptionButton?.addEventListener('click', () => addPollOptionInput());
+            state.dom.sendPollButton?.addEventListener('click', () => sendPoll());
+            state.dom.pollExamModeToggle?.addEventListener('change', () => syncPollComposerMode());
+            state.dom.pollAnonymousToggle?.addEventListener('change', () => syncPollComposerMode());
+            state.dom.closePollVotesButton?.addEventListener('click', () => ui.closeModal(state.dom.pollVotesModal));
+            state.dom.pollVotesModal?.addEventListener('click', (e) => {
+                if (e.target === state.dom.pollVotesModal) ui.closeModal(state.dom.pollVotesModal);
+            });
+            state.dom.pollComposerModal?.addEventListener('click', (e) => {
+                if (e.target === state.dom.pollComposerModal) ui.closeModal(state.dom.pollComposerModal);
+            });
 			state.dom.stickersButton.addEventListener('click', () => toggleStickersModal());
 			state.dom.closeStickersButton.addEventListener('click', () => state.dom.stickersModal.classList.add('hidden'));
-			// Close stickers modal when clicking outside
+			// Close inline composer panels when clicking outside
 			document.addEventListener('click', (e) => {
 				if (state.dom.stickersModal && !state.dom.stickersModal.classList.contains('hidden')) {
 					if (!state.dom.stickersModal.contains(e.target) && e.target.id !== 'stickersButton' && !e.target.closest('#stickersButton')) {
 						state.dom.stickersModal.classList.add('hidden');
 					}
 				}
+                if (state.dom.attachMenuPanel && !state.dom.attachMenuPanel.classList.contains('hidden')) {
+                    if (!state.dom.attachMenuPanel.contains(e.target) && e.target.id !== 'fileUploadButton' && !e.target.closest('#fileUploadButton')) {
+                        state.dom.attachMenuPanel.classList.add('hidden');
+                    }
+                }
 			});
             state.dom.removeFilePreview.addEventListener('click', () => ui.hideFilePreview());
             state.dom.removeReplyPreview.addEventListener('click', () => cancelReplyMode());
@@ -5795,11 +7660,22 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 if (document.visibilityState === 'visible') {
                     flushSeenForCurrentChat();
                     syncNotificationPreferenceUi();
+                    if (getValidSession() && (!state.socket || state.socket.readyState === WebSocket.CLOSED)) {
+                        scheduleReconnect();
+                    }
                 }
             });
             window.addEventListener('focus', () => {
                 flushSeenForCurrentChat();
                 syncNotificationPreferenceUi();
+                if (getValidSession() && (!state.socket || state.socket.readyState === WebSocket.CLOSED)) {
+                    scheduleReconnect();
+                }
+            });
+            window.addEventListener('online', () => {
+                if (getValidSession() && (!state.socket || state.socket.readyState === WebSocket.CLOSED)) {
+                    scheduleReconnect();
+                }
             });
             state.dom.editHandleCloseBtn?.addEventListener('click', () => ui.closeModal(state.dom.editHandleModal));
             state.dom.editHandleModal?.addEventListener('click', (e) => { if (e.target === state.dom.editHandleModal) ui.closeModal(state.dom.editHandleModal); });
@@ -5811,12 +7687,98 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
                 ui.openMainMenu();
             });
+            state.dom.onboardingSkipButton?.addEventListener('click', () => finishOnboarding());
+            state.dom.onboardingNextButton?.addEventListener('click', () => moveOnboarding(1));
+            state.dom.onboardingCard?.addEventListener('pointerdown', (event) => {
+                state.onboardingSwipeStartX = event.clientX;
+            });
+            state.dom.onboardingCard?.addEventListener('pointerup', (event) => {
+                const startX = state.onboardingSwipeStartX;
+                state.onboardingSwipeStartX = null;
+                if (typeof startX !== 'number') return;
+                const deltaX = event.clientX - startX;
+                if (Math.abs(deltaX) < 40) return;
+                moveOnboarding(deltaX < 0 ? 1 : -1);
+            });
+            state.dom.onboardingCard?.addEventListener('pointercancel', () => {
+                state.onboardingSwipeStartX = null;
+            });
             state.dom.closeSettingsButton.addEventListener('click', () => { ui.showSettingsMenu(); ui.closeModal(state.dom.themesModal); ui.closeModal(state.dom.settingsModal); });
             state.dom.settingsBackBtn.addEventListener('click', () => ui.showSettingsMenu());
+            state.dom.settingsPremiumOption?.addEventListener('click', () => openSubscriptionMenuModal());
             state.dom.settingsProfileOption.addEventListener('click', () => ui.showSettingsSection('profile'));
             state.dom.settingsAccountOption.addEventListener('click', () => ui.showSettingsSection('account'));
             state.dom.settingsPreferencesOption.addEventListener('click', () => ui.showSettingsSection('preferences'));
             state.dom.settingsChangelogOption.addEventListener('click', () => ui.showSettingsSection('changelog'));
+            state.dom.closeEmailComposerButton?.addEventListener('click', () => closeEmailComposerModal());
+            state.dom.cancelEmailComposerButton?.addEventListener('click', () => closeEmailComposerModal());
+            state.dom.sendEmailComposerButton?.addEventListener('click', () => submitEmailComposer());
+            state.dom.emailComposerModal?.addEventListener('click', (event) => {
+                if (event.target === state.dom.emailComposerModal) closeEmailComposerModal();
+            });
+            state.dom.closeEmailAddressButton?.addEventListener('click', () => closeEmailAddressModal());
+            state.dom.cancelEmailAddressButton?.addEventListener('click', () => closeEmailAddressModal());
+            state.dom.createEmailAddressButton?.addEventListener('click', () => submitEmailAddressCreate());
+            state.dom.emailAddressLocalPartInput?.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    submitEmailAddressCreate();
+                }
+            });
+            state.dom.emailAddressModal?.addEventListener('click', (event) => {
+                if (event.target === state.dom.emailAddressModal) closeEmailAddressModal();
+            });
+            state.dom.closeEmailViewerButton?.addEventListener('click', () => closeEmailViewerModal());
+            state.dom.emailViewerModal?.addEventListener('click', (event) => {
+                if (event.target === state.dom.emailViewerModal) closeEmailViewerModal();
+            });
+            state.dom.emailViewerDeleteButton?.addEventListener('click', async () => {
+                const ctx = state.emailViewerContext;
+                if (!ctx?.deleteCallbackData) return;
+                try {
+                    await triggerBotCallback(state.currentChat?.chatId, ctx.sourceMessageId, ctx.deleteCallbackData);
+                    closeEmailViewerModal();
+                } catch (error) {
+                    showErrorModal(t('emailBot.title', 'Email'), error.message || t('bot.callbackFailed', 'Could not send that bot action.'));
+                }
+            });
+            state.dom.emailViewerBlockButton?.addEventListener('click', async () => {
+                const ctx = state.emailViewerContext;
+                if (!ctx?.blockCallbackData) return;
+                try {
+                    await triggerBotCallback(state.currentChat?.chatId, ctx.sourceMessageId, ctx.blockCallbackData);
+                    closeEmailViewerModal();
+                } catch (error) {
+                    showErrorModal(t('emailBot.title', 'Email'), error.message || t('bot.callbackFailed', 'Could not send that bot action.'));
+                }
+            });
+            state.dom.emailViewerReplyButton?.addEventListener('click', async () => {
+                const ctx = state.emailViewerContext;
+                if (!ctx?.mailId) return;
+                closeEmailViewerModal();
+                await handleEmailBotAction(`email:reply:${ctx.mailId}`, ctx.sourceMessageId);
+            });
+            state.dom.closePremiumModalButton?.addEventListener('click', () => { destroyPremiumPreview(); ui.closeModal(state.dom.premiumModal); });
+            state.dom.premiumModal?.addEventListener('click', (event) => { if (event.target === state.dom.premiumModal) { destroyPremiumPreview(); ui.closeModal(state.dom.premiumModal); } });
+            state.dom.closePremiumPaymentModalButton?.addEventListener('click', () => ui.closeModal(state.dom.premiumPaymentModal));
+            state.dom.premiumPaymentModal?.addEventListener('click', (event) => { if (event.target === state.dom.premiumPaymentModal) ui.closeModal(state.dom.premiumPaymentModal); });
+            state.dom.premiumBuyButton?.addEventListener('click', () => openPremiumPaymentModal());
+            state.dom.premiumSilverUpsellButton?.addEventListener('click', () => {
+                openPremiumModal('silver');
+            });
+            state.dom.premiumCancelButton?.addEventListener('click', () => cancelPremiumSubscription());
+            state.dom.premiumViewProfileButton?.addEventListener('click', () => {
+                destroyPremiumPreview();
+                ui.closeModal(state.dom.premiumModal);
+                ui.closeUserInfoModal();
+                ui.openSettings();
+                ui.showSettingsSection('profile');
+            });
+            state.dom.premiumReceiptInput?.addEventListener('change', (event) => {
+                const file = event.target?.files?.[0] || null;
+                updatePremiumPaymentPreview(file);
+            });
+            state.dom.submitPremiumPaymentButton?.addEventListener('click', () => submitPremiumPaymentRequest());
             state.dom.settingsLanguageSelect?.addEventListener('change', async (event) => {
                 const nextLanguage = normalizeLanguageCode(event.target.value);
                 if (!SUPPORTED_LANGUAGES.includes(nextLanguage)) return;
@@ -5831,9 +7793,12 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     ui.renderSettingsChangelog();
                 }
             });
+            state.dom.settingsEmojiSelect?.addEventListener('change', async (event) => {
+                await applyEmojiMode(event.target.value, true);
+            });
             state.dom.notificationsPermissionButton?.addEventListener('click', async () => {
                 if (typeof PushNotificationManager === 'undefined') return;
-                await PushNotificationManager.requestPermission();
+                await PushNotificationManager.requestPermission(state.currentUser?.userId || '', state.sessionToken || '');
                 setTimeout(syncNotificationPreferenceUi, 50);
                 syncNotificationPreferenceUi();
             });
@@ -5844,7 +7809,16 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const button = event.target.closest('[data-theme-preset]');
                 if (!button) return;
                 const presetId = button.dataset.themePreset || '';
-                if (presetId) applyThemePreset(presetId);
+                if (!presetId) return;
+                if (!canUseThemePreset(presetId)) {
+                    if (isSilverThemePreset(presetId)) {
+                        openPremiumModal('silver');
+                    } else if (isPremiumThemePreset(presetId)) {
+                        openPremiumModal('premium_theme');
+                    }
+                    return;
+                }
+                applyThemePreset(presetId);
             });
             ['Bio', 'Gifts', 'MutualGroups'].forEach((name) => {
                 const panelName = name === 'MutualGroups' ? 'mutual-groups' : name.toLowerCase();
@@ -5867,12 +7841,35 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
                 ui.updateBioCounter();
             });
+            state.dom.editUsernameFontSelect?.addEventListener('change', () => {
+                applyNicknameFontPreview(state.dom.editUsernameFontSelect?.value || '');
+            });
+            state.dom.profileSkinModeSelect?.addEventListener('change', () => {
+                syncProfileSkinControls();
+            });
+            state.dom.profileSkinGradientStopsSelect?.addEventListener('change', () => {
+                syncProfileSkinControls();
+            });
+            [state.dom.profileSkinColorPrimary, state.dom.profileSkinColorSecondary, state.dom.profileSkinColorTertiary].forEach((input) => {
+                input?.addEventListener('input', () => syncProfileSkinControls());
+            });
             state.dom.saveSettingsButton.addEventListener('click', () => {
                 const currentUser = state.allUsers[state.currentUser.userId];
                 const newUsername = state.dom.editUsernameInput.value.trim();
+                const selectedNicknameFont = normalizeNicknameFont(state.dom.editUsernameFontSelect?.value || '');
                 const newHandle = state.dom.editHandleInput?.value.trim() || '';
                 const normalizedHandle = newHandle ? `@${newHandle.replace(/^@/, '').toLowerCase()}` : '';
                 const newBio = String(state.dom.editBioInput.value || '').slice(0, PROFILE_BIO_MAX_LENGTH);
+                const skinMode = String(state.dom.profileSkinModeSelect?.value || '').trim().toLowerCase();
+                const nextProfileSkin = buildProfileSkinFromInputs();
+                if (selectedNicknameFont && String(currentUser?.membershipTier || '').toLowerCase() !== 'premium') {
+                    openPremiumModal();
+                    return;
+                }
+                if ((skinMode || nextProfileSkin) && String(currentUser?.membershipTier || '').toLowerCase() !== 'premium') {
+                    openPremiumModal();
+                    return;
+                }
                 const payload = { type: 'update_profile' };
                 let hasChanges = false;
                 if (newUsername && newUsername !== currentUser?.username) {
@@ -5887,6 +7884,14 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     payload.handle = newHandle;
                     hasChanges = true;
                 }
+                if (selectedNicknameFont !== normalizeNicknameFont(currentUser?.nicknameFont || '')) {
+                    payload.nicknameFont = selectedNicknameFont;
+                    hasChanges = true;
+                }
+                if (JSON.stringify(nextProfileSkin || null) !== JSON.stringify(normalizeProfileSkin(currentUser?.profileSkin) || null)) {
+                    payload.profileSkin = nextProfileSkin;
+                    hasChanges = true;
+                }
                 if (hasChanges && state.socket?.readyState === WebSocket.OPEN) {
                     state.socket.send(JSON.stringify(payload));
                     state.allUsers[state.currentUser.userId] = {
@@ -5894,9 +7899,69 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         username: payload.username || currentUser?.username,
                         handle: Object.prototype.hasOwnProperty.call(payload, 'handle') ? (normalizedHandle || null) : currentUser?.handle,
                         bio: Object.prototype.hasOwnProperty.call(payload, 'bio') ? payload.bio : currentUser?.bio,
+                        nicknameFont: Object.prototype.hasOwnProperty.call(payload, 'nicknameFont') ? selectedNicknameFont : currentUser?.nicknameFont,
+                        profileSkin: Object.prototype.hasOwnProperty.call(payload, 'profileSkin') ? (nextProfileSkin || null) : currentUser?.profileSkin,
+                    };
+                    state.currentUser = {
+                        ...state.currentUser,
+                        username: payload.username || state.currentUser?.username,
+                        handle: Object.prototype.hasOwnProperty.call(payload, 'handle') ? (normalizedHandle || null) : state.currentUser?.handle,
+                        bio: Object.prototype.hasOwnProperty.call(payload, 'bio') ? payload.bio : state.currentUser?.bio,
+                        nicknameFont: Object.prototype.hasOwnProperty.call(payload, 'nicknameFont') ? selectedNicknameFont : state.currentUser?.nicknameFont,
+                        profileSkin: Object.prototype.hasOwnProperty.call(payload, 'profileSkin') ? (nextProfileSkin || null) : state.currentUser?.profileSkin,
                     };
                 }
                 ui.populateSettingsProfile(state.allUsers[state.currentUser.userId]);
+            });
+            const findMembershipBadgeElement = (event) => event.target?.closest?.('[data-membership-badge="1"], [data-premium-badge="1"]')
+                || (typeof event.composedPath === 'function' && event.composedPath().find((node) => node?.dataset?.membershipBadge === '1' || node?.dataset?.premiumBadge === '1')) || null;
+            const openMembershipPurchaseFromEvent = (event, user, allowPremiumEditor = false) => {
+                const badgeEl = findMembershipBadgeElement(event);
+                if (!badgeEl) return false;
+                const tier = String(badgeEl.dataset.membershipTier || (badgeEl.dataset.premiumBadge === '1' ? 'premium' : '')).toLowerCase();
+            if (allowPremiumEditor && tier === 'premium') {
+                    openPremiumStarPickerModal();
+                    return true;
+                }
+                openPremiumModal(tier === 'silver' ? 'silver' : 'premium', 'profile_badge');
+                return true;
+            };
+            state.dom.settingsUsername?.addEventListener('click', (event) => {
+                openMembershipPurchaseFromEvent(event, state.currentUser, true);
+            });
+            state.dom.settingsUsername?.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                if (openMembershipPurchaseFromEvent(event, state.currentUser, true)) {
+                    event.preventDefault();
+                }
+            });
+            state.dom.userInfoUsername?.addEventListener('click', (event) => {
+                const userId = state.activeUserInfoUserId;
+                if (!userId) return;
+                openMembershipPurchaseFromEvent(event, state.allUsers[userId] || { userId });
+            });
+            state.dom.userInfoUsername?.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                const userId = state.activeUserInfoUserId;
+                if (!userId) return;
+                if (openMembershipPurchaseFromEvent(event, state.allUsers[userId] || { userId })) {
+                    event.preventDefault();
+                }
+            });
+            state.dom.closePremiumStarPickerButton?.addEventListener('click', closePremiumStarPickerModal);
+            state.dom.cancelPremiumStarPickerButton?.addEventListener('click', closePremiumStarPickerModal);
+            state.dom.savePremiumStarPickerButton?.addEventListener('click', commitPremiumStarPickerSelection);
+            state.dom.premiumStarSourceStickers?.addEventListener('click', () => {
+                state.premiumStarPickerSource = 'stickers';
+                renderPremiumStarPickerGrid();
+            });
+            state.dom.premiumStarSourceTemplates?.addEventListener('click', () => {
+                state.premiumStarPickerSource = 'templates';
+                renderPremiumStarPickerGrid();
+            });
+            state.dom.premiumStarResetButton?.addEventListener('click', () => {
+                state.premiumStarPickerSelection = null;
+                commitPremiumStarPickerSelection();
             });
             state.dom.logoutButton.addEventListener('click', () => handleLogoutSequence(true));
             state.dom.logoutFromLoadingButton.addEventListener('click', () => handleLogoutSequence(true));
@@ -6024,6 +8089,27 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
                 setSidebarSearchActive(!state.isSidebarSearchActive);
             });
+            state.dom.chatSearchButton?.addEventListener('click', () => {
+                if (!state.currentChat) return;
+                state.sidebarSearchQuery = '';
+                state.chatSearchResults = [];
+                if (window.innerWidth < 768) {
+                    state.dom.mainApp?.classList.remove('chat-view-active');
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            setSidebarSearchActive(true, {
+                                mode: 'chat',
+                                chatId: state.currentChat.chatId
+                            });
+                        });
+                    });
+                    return;
+                }
+                setSidebarSearchActive(true, {
+                    mode: 'chat',
+                    chatId: state.currentChat.chatId
+                });
+            });
             state.dom.closeSidebarSearchButton?.addEventListener('click', () => setSidebarSearchActive(false));
             state.dom.sidebarSearchInput?.addEventListener('keydown', (event) => {
                 if (event.key === 'Escape') {
@@ -6035,30 +8121,43 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const query = String(state.dom.sidebarSearchInput.value || '').trim();
                 state.sidebarSearchQuery = query;
                 if (state.sidebarSearchTimer) clearTimeout(state.sidebarSearchTimer);
+                if (state.sidebarSearchMode === 'chat') {
+                    state.chatSearchResults = query ? searchMessagesInChat(state.sidebarSearchChatId, query) : [];
+                    prepareSidebarListForEnter();
+                    renderSidebarSearchResults(query, state.chatSearchResults, 'chat');
+                    applySidebarListEnterAnimation();
+                    if (query) {
+                        const requestId = ++state.sidebarSearchRequestId;
+                        state.sidebarSearchTimer = window.setTimeout(() => {
+                            requestChatMessageSearch(state.sidebarSearchChatId, query, requestId);
+                        }, 120);
+                    }
+                    return;
+                }
                 if (!query) {
                     state.publicSearchResults = [];
                     prepareSidebarListForEnter();
-                    renderSidebarSearchResults('', []);
+                    renderSidebarSearchResults('', [], 'public');
                     applySidebarListEnterAnimation();
                     return;
                 }
                 prepareSidebarListForEnter();
-                renderSidebarSearchResults(query, state.publicSearchResults);
+                renderSidebarSearchResults(query, state.publicSearchResults, 'public');
                 applySidebarListEnterAnimation();
                 const requestId = ++state.sidebarSearchRequestId;
                 state.sidebarSearchTimer = window.setTimeout(async () => {
                     try {
                         const results = await searchPublicDirectory(query);
-                        if (requestId !== state.sidebarSearchRequestId || !state.isSidebarSearchActive) return;
+                        if (requestId !== state.sidebarSearchRequestId || !state.isSidebarSearchActive || state.sidebarSearchMode !== 'public') return;
                         state.publicSearchResults = results;
                         prepareSidebarListForEnter();
-                        renderSidebarSearchResults(query, results);
+                        renderSidebarSearchResults(query, results, 'public');
                         applySidebarListEnterAnimation();
                     } catch (error) {
-                        if (requestId !== state.sidebarSearchRequestId || !state.isSidebarSearchActive) return;
+                        if (requestId !== state.sidebarSearchRequestId || !state.isSidebarSearchActive || state.sidebarSearchMode !== 'public') return;
                         state.publicSearchResults = [];
                         prepareSidebarListForEnter();
-                        renderSidebarSearchResults(query, []);
+                        renderSidebarSearchResults(query, [], 'public');
                         applySidebarListEnterAnimation();
                     }
                 }, 180);
@@ -6106,6 +8205,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     return;
                 }
                 if (state.currentChat.chatType === 'group' || state.currentChat.chatType === 'channel') {
+                    const isMember = state.currentChat.ownerId === state.currentUser.userId || (state.currentChat.members || []).includes(state.currentUser.userId);
+                    if (!isMember) return;
                     openChatSettings(state.currentChat.chatId);
                 }
             });
@@ -6274,6 +8375,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             state.dom.voiceCallButton.addEventListener('click', handleVoiceCallButtonClick);
             state.dom.leaveCallButton.addEventListener('click', leaveVoiceChat);
             state.dom.toggleScreenShareButton.addEventListener('click', toggleVoiceScreenShare);
+            state.dom.toggleScreenShareQualityButton.addEventListener('click', toggleScreenShareQuality);
             state.dom.toggleMuteButton.addEventListener('click', toggleVoiceMute);
             state.dom.toggleDeafenButton.addEventListener('click', toggleVoiceDeafen);
             state.dom.toggleCallStageButton.addEventListener('click', toggleVoiceStageSize);
@@ -6472,10 +8574,12 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         }
 
         function connect(authPayload) {
-            if (state.socket?.readyState === WebSocket.OPEN) return;
-            resetAuthBootstrapState();
-            
+            if (state.socket?.readyState === WebSocket.OPEN || state.socket?.readyState === WebSocket.CONNECTING) return;
             const isReconnecting = authPayload.type === 'reconnect';
+            if (!isReconnecting) {
+                resetAuthBootstrapState();
+            }
+            
             const hasVisibleAppShell = !state.dom.mainApp?.classList.contains('hidden');
             ui.showLoading(
                 isReconnecting ? t('loading.reconnectingAttempt', `Reconnecting (attempt ${state.reconnectAttempts + 1})...`).replace('{attempt}', state.reconnectAttempts + 1) : t('loading.connecting', 'Connecting...'),
@@ -6515,11 +8619,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     return;
                 }
 
-                if (event.code === 1000 || event.code === 1008) {
+                if (event.code === 1008) {
                     handleLogoutSequence(false);
-                    if (event.code === 1008) {
-                        setTimeout(() => { if(state.dom.authError) state.dom.authError.textContent = t('error.sessionTerminatedOtherDevice', 'Session terminated. You logged in from another device.'); }, 100);
-                    }
+                    setTimeout(() => { if(state.dom.authError) state.dom.authError.textContent = t('error.sessionTerminatedOtherDevice', 'Session terminated. You logged in from another device.'); }, 100);
                 } else if (getValidSession()) {
                     scheduleReconnect();
                 } else {
@@ -6528,30 +8630,33 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             };
             state.socket.onerror = (e) => { 
                 console.error('WebSocket Error:', e); 
-                state.socket = null; 
+                if (state.socket?.readyState !== WebSocket.OPEN) {
+                    state.socket = null;
+                }
                 if (getValidSession()) {
                     scheduleReconnect();
                 } else {
                     ui.showAuthScreen();
-                    state.dom.authError.textContent = 'Could not connect to the server.';
+                    state.dom.authError.textContent = t('error.couldNotConnect', 'Could not connect to the server.');
                 }
             };
         }
         
         function scheduleReconnect() {
-            if (state.isReconnecting) return;
+            if (state.reconnectTimer) return;
             state.isReconnecting = true; 
             state.reconnectAttempts++;
-            if (state.reconnectAttempts > 5) {
-                console.error("Failed to reconnect after 5 attempts.");
-                state.dom.loadingStatus.textContent = 'Could not connect to server.';
-                state.dom.loadingSpinner.classList.add('hidden');
-                state.dom.logoutFromLoadingButton.classList.remove('hidden');
-                return;
-            }
             const delay = Math.min(1000 * (2 ** state.reconnectAttempts), 30000); 
             ui.setReconnectingState(true);
-            setTimeout(() => {
+            if (state.dom.loadingStatus) {
+                state.dom.loadingStatus.textContent = t('loading.reconnectingAttempt', `Reconnecting (attempt ${state.reconnectAttempts})...`).replace('{attempt}', state.reconnectAttempts);
+            }
+            state.dom.loadingSpinner?.classList.remove('hidden');
+            if (!state.dom.mainApp?.classList.contains('hidden')) {
+                state.dom.logoutFromLoadingButton?.classList.add('hidden');
+            }
+            state.reconnectTimer = setTimeout(() => {
+                state.reconnectTimer = null;
                 const session = getValidSession();
                 if (session) connect({ type: 'reconnect', userId: session.userId, token: session.token });
             }, delay);
@@ -6756,13 +8861,18 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 if (users.length === 1) statusText = `${users[0]} is typing...`;
                 else if (users.length === 2) statusText = `${users.join(' and ')} are typing...`;
                 else statusText = `${users.length} people are typing...`;
-                state.dom.chatStatus.textContent = statusText;
-                const indicator = document.createElement('span');
-                indicator.className = 'typing-indicator';
-                indicator.innerHTML = '<span></span><span></span><span></span>';
-                state.dom.chatStatus.appendChild(document.createTextNode(' '));
-                state.dom.chatStatus.appendChild(indicator);
+                const signature = `${chatId}:${statusText}`;
+                if (state.dom.chatStatus.dataset.typingSignature !== signature) {
+                    state.dom.chatStatus.textContent = statusText;
+                    const indicator = document.createElement('span');
+                    indicator.className = 'typing-indicator';
+                    indicator.innerHTML = '<span></span><span></span><span></span>';
+                    state.dom.chatStatus.appendChild(document.createTextNode(' '));
+                    state.dom.chatStatus.appendChild(indicator);
+                    state.dom.chatStatus.dataset.typingSignature = signature;
+                }
             } else {
+                delete state.dom.chatStatus.dataset.typingSignature;
                 restoreChatStatus(chatId);
             }
         }
@@ -6777,6 +8887,11 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 loadWalletOverview(true).catch((error) => {
                     console.error('Failed to load wallet overview', error);
                 });
+                if (typeof PushNotificationManager !== 'undefined' && state.currentUser?.userId && state.sessionToken) {
+                    PushNotificationManager.syncSubscription(state.currentUser.userId, state.sessionToken).catch((error) => {
+                        console.error('Push subscription sync failed', error);
+                    });
+                }
 
                 changeTitleWithFade(t('brand.appName', 'Noveo'), 100);
             }
@@ -6791,9 +8906,15 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             state.allChats = {};
             state.typingUsers = {};
             state.messagePages = {};
+            state.chatHistoryState = {};
             state.userProfiles = {};
             state.walletOverview = null;
             state.lastSidebarListAnimationSignature = '';
+            state.chatSearchResults = [];
+            state.pendingMessageContextRequests = {};
+            state.pendingSearchJump = null;
+            state.sidebarSearchMode = 'public';
+            state.sidebarSearchChatId = null;
         }
 
         async function handleSocketMessage(event) {
@@ -6806,6 +8927,10 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             const handlers = {
                 'login_success': (data) => { 
                     state.reconnectAttempts = 0;
+                    if (state.reconnectTimer) {
+                        clearTimeout(state.reconnectTimer);
+                        state.reconnectTimer = null;
+                    }
                     state.authResyncAttempts = 0;
                     ui.setReconnectingState(false);
                     const fallbackToken = data.token || state.sessionToken || normalizeSession(getStorage().loadSession())?.token || '';
@@ -6815,6 +8940,8 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     state.sessionToken = session.token || null;
                     state.sessionExpiresAt = Number(session.expiresAt || 0);
                     state.currentUser = data.user; 
+                    state.allUsers[data.user.userId] = { ...(state.allUsers[data.user.userId] || {}), ...data.user };
+                    enforcePremiumEntitlements();
                     state.PUBLIC_CHAT_ID = data.publicChatId; 
                     loadContacts(true).catch(() => {}).finally(() => {
                         state.dataLoaded.contacts = true;
@@ -6859,6 +8986,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     data.users.forEach(u => {
                         const cachedProfile = state.userProfiles[u.userId] || {};
                         const existingUser = state.allUsers[u.userId] || {};
+                        const membershipTier = String(u.membershipTier ?? cachedProfile.membershipTier ?? existingUser.membershipTier ?? '').trim().toLowerCase();
                         state.allUsers[u.userId] = {
                             ...cachedProfile,
                             ...existingUser,
@@ -6868,12 +8996,20 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                             blockGroupInvites: Boolean(u.blockGroupInvites),
                             lastSeen: u.lastSeen ?? cachedProfile.lastSeen ?? existingUser.lastSeen ?? null,
                             contactName: u.contactName || existingUser.contactName || cachedProfile.contactName || '',
+                            membershipTier,
+                            premiumStarIcon: u.premiumStarIcon ?? existingUser.premiumStarIcon ?? cachedProfile.premiumStarIcon ?? null,
                             isContact: Boolean(u.isContact || existingUser.isContact || cachedProfile.isContact),
                         };
                     });
                     Object.values(state.allUsers).forEach(u => u.online = data.online.includes(u.userId));
                     if (state.currentUser?.userId && state.allUsers[state.currentUser.userId]) {
-                        state.currentUser = { ...state.currentUser, ...state.allUsers[state.currentUser.userId] };
+                        const currentUserProfile = state.allUsers[state.currentUser.userId];
+                        state.currentUser = {
+                            ...state.currentUser,
+                            ...currentUserProfile,
+                            membershipTier: resolveBestMembershipTier(state.currentUser.membershipTier, currentUserProfile?.membershipTier),
+                            premiumStarIcon: currentUserProfile?.premiumStarIcon ?? state.currentUser.premiumStarIcon ?? null,
+                        };
                         if (!state.dom.settingsModal.classList.contains('hidden')) {
                             ui.populateSettingsProfile(state.allUsers[state.currentUser.userId]);
                         }
@@ -6934,9 +9070,17 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         unreadCount: existingChat.unreadCount || tempChat?.unreadCount || 0,
                         previewOnly: false
                     };
+                    trimChatMessages(incomingChat.chatId, incomingChat.chatId === state.currentChat?.chatId ? ACTIVE_CHAT_MESSAGE_LIMIT : INACTIVE_CHAT_MESSAGE_LIMIT);
+                    ensureChatHistoryState(incomingChat.chatId, {
+                        hasMore: Boolean(incomingChat.hasMoreHistory),
+                        loading: false,
+                        initialRendered: false,
+                        lastRequestedBefore: null
+                    });
 
                     if (tempChatId && tempChatId !== incomingChat.chatId) {
                         delete state.allChats[tempChatId];
+                        delete state.chatHistoryState[tempChatId];
                     }
 
                     ui.renderContactList();
@@ -6987,17 +9131,69 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         messages: mergedMessages,
                         previewOnly: !isMember
                     };
+                    trimChatMessages(incomingChannel.chatId, incomingChannel.chatId === state.currentChat?.chatId ? ACTIVE_CHAT_MESSAGE_LIMIT : INACTIVE_CHAT_MESSAGE_LIMIT);
+                    ensureChatHistoryState(incomingChannel.chatId, {
+                        hasMore: Boolean(incomingChannel.hasMoreHistory),
+                        loading: false,
+                        initialRendered: false,
+                        lastRequestedBefore: null
+                    });
                     updateChatMetadata(incomingChannel.chatId);
                     openChat(state.allChats[incomingChannel.chatId]);
                     ui.renderContactList();
+                },
+                'older_messages': (data) => {
+                    const chatId = data.chatId;
+                    const chat = state.allChats[chatId];
+                    if (!chat) return;
+                    const olderMessages = normalizeMessages(data.messages || []);
+                    chat.messages = normalizeMessages([
+                        ...olderMessages,
+                        ...(Array.isArray(chat.messages) ? chat.messages : [])
+                    ]);
+                    ensureChatHistoryState(chatId, {
+                        hasMore: Boolean(data.hasMoreHistory),
+                        loading: false,
+                        initialRendered: true,
+                        lastRequestedBefore: null
+                    });
+                    if (state.currentChat?.chatId === chatId) {
+                        const oldScrollHeight = state.dom.messagesContainer.scrollHeight;
+                        olderMessages.forEach((msg) => ui.renderMessage(msg, true));
+                        state.dom.messagesContainer.scrollTop = state.dom.messagesContainer.scrollHeight - oldScrollHeight;
+                    }
+                    hideChatLoadingSpinner();
+                    state.isLoadingMore = false;
+                },
+                'chat_message_search_results': (data) => {
+                    if (!state.isSidebarSearchActive || state.sidebarSearchMode !== 'chat') return;
+                    if (data.chatId !== state.sidebarSearchChatId) return;
+                    if (Number(data.requestId) !== Number(state.sidebarSearchRequestId)) return;
+                    if (String(data.query || '').trim() !== String(state.sidebarSearchQuery || '').trim()) return;
+                    state.chatSearchResults = normalizeMessages(data.messages || []);
+                    prepareSidebarListForEnter();
+                    renderSidebarSearchResults(state.sidebarSearchQuery, state.chatSearchResults, 'chat');
+                    applySidebarListEnterAnimation();
+                },
+                'message_context': (data) => {
+                    const requestId = String(data.requestId || '');
+                    const resolver = state.pendingMessageContextRequests[requestId];
+                    if (resolver) {
+                        delete state.pendingMessageContextRequests[requestId];
+                        resolver(data);
+                    }
                 },
                 'chat_updated': (data) => {
                     const chat = state.allChats[data.chatId];
                     if (!chat) return;
                     if (Object.prototype.hasOwnProperty.call(data, 'handle')) chat.handle = data.handle;
+                    if (Object.prototype.hasOwnProperty.call(data, 'avatarUrl')) chat.avatarUrl = data.avatarUrl;
                     if (Object.prototype.hasOwnProperty.call(data, 'seenReceiptsEnabled')) chat.seenReceiptsEnabled = Boolean(data.seenReceiptsEnabled);
                     if (Object.prototype.hasOwnProperty.call(data, 'isVerified')) chat.isVerified = Boolean(data.isVerified);
                     if (Object.prototype.hasOwnProperty.call(data, 'ownerId')) chat.ownerId = data.ownerId;
+                    if (state.currentChat?.chatId === data.chatId && Object.prototype.hasOwnProperty.call(data, 'avatarUrl')) {
+                        state.currentChat.avatarUrl = data.avatarUrl;
+                    }
                     if (state.currentChat?.chatId === data.chatId) openChat(chat, true);
                     ui.renderContactList();
                 },
@@ -7067,7 +9263,11 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 'message_reactions_update': (data) => {
                     applyMessageReactionUpdate(data.chatId, data.messageId, data.reactions || []);
                 },
-                'error': (data) => { showErrorModal('Server Error', data.message); ui.hideLoading(); },
+                'error': async (data) => {
+                    if (await handleDmCaptchaRequiredError(data.message)) return;
+                    showErrorModal('Server Error', data.message);
+                    ui.hideLoading();
+                },
                 'password_changed': (data) => {
                     const current = getValidSession();
                     if (current && data.token && data.expiresAt) {
@@ -7135,6 +9335,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         // selectively update user data
                         const existingUser = state.allUsers[data.userId];
                         const hasContactAlias = Boolean(existingUser.isContact && existingUser.contactName);
+                        const nextMembershipTier = String(data.membershipTier ?? '').trim().toLowerCase();
                         existingUser.originalUsername = data.username;
                         existingUser.username = hasContactAlias ? existingUser.contactName : data.username;
                         existingUser.avatarUrl = data.avatarUrl;
@@ -7143,12 +9344,17 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         existingUser.bio = data.bio ?? existingUser.bio ?? '';
                         existingUser.isVerified = data.isVerified ?? existingUser.isVerified ?? false;
                         existingUser.isBot = data.isBot ?? existingUser.isBot ?? false;
+                        existingUser.membershipTier = resolveBestMembershipTier(existingUser.membershipTier, nextMembershipTier);
+                        existingUser.nicknameFont = data.nicknameFont ?? existingUser.nicknameFont ?? '';
+                        existingUser.profileSkin = data.profileSkin ?? existingUser.profileSkin ?? null;
+                        existingUser.premiumStarIcon = data.premiumStarIcon ?? existingUser.premiumStarIcon ?? null;
                         existingUser.languageCode = data.languageCode ?? existingUser.languageCode ?? 'en';
                         if (state.userProfiles[data.userId]) {
                             state.userProfiles[data.userId] = { ...state.userProfiles[data.userId], ...data, username: existingUser.username, originalUsername: existingUser.originalUsername };
                         }
                     }
                     if (state.currentUser?.userId === data.userId) {
+                        const nextMembershipTier = String(data.membershipTier ?? '').trim().toLowerCase();
                         state.currentUser = {
                             ...state.currentUser,
                             username: data.username ?? state.currentUser.username,
@@ -7158,8 +9364,13 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                             bio: data.bio ?? state.currentUser.bio ?? '',
                             isVerified: data.isVerified ?? state.currentUser.isVerified ?? false,
                             isBot: data.isBot ?? state.currentUser.isBot ?? false,
+                            membershipTier: resolveBestMembershipTier(state.currentUser.membershipTier, nextMembershipTier),
+                            nicknameFont: data.nicknameFont ?? state.currentUser.nicknameFont ?? '',
+                            profileSkin: data.profileSkin ?? state.currentUser.profileSkin ?? null,
+                            premiumStarIcon: data.premiumStarIcon ?? state.currentUser.premiumStarIcon ?? null,
                             languageCode: data.languageCode ?? state.currentUser.languageCode ?? state.currentLanguage
                         };
+                        enforcePremiumEntitlements();
                         if (!state.dom.settingsModal.classList.contains('hidden') && state.allUsers[data.userId]) {
                             ui.populateSettingsProfile(state.allUsers[data.userId]);
                         }
@@ -7199,6 +9410,13 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                     !(message?.seenBy?.includes(state.currentUser.userId))
                 )).length;
                 state.allChats[chatData.chatId] = { ...chatData, messages, pinnedMessage, unreadCount: unreadCount };
+                ensureChatHistoryState(chatData.chatId, {
+                    hasMore: Boolean(chatData.hasMoreHistory),
+                    loading: false,
+                    initialRendered: false,
+                    lastRequestedBefore: null
+                });
+                trimChatMessages(chatData.chatId, chatData.chatId === state.currentChat?.chatId ? ACTIVE_CHAT_MESSAGE_LIMIT : INACTIVE_CHAT_MESSAGE_LIMIT);
                 updateChatMetadata(chatData.chatId);
             }
         }
@@ -7270,7 +9488,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 } else {
                     if (msg.senderId !== state.currentUser.userId) {
                          state.allChats[msg.chatId].unreadCount = (state.allChats[msg.chatId].unreadCount || 0) + 1;
-                         if (!isUserMutedLocally(msg.senderId) && typeof PushNotificationManager !== 'undefined') {
+                         if (!isUserMutedLocally(msg.senderId) && !isChatMutedLocally(msg.chatId) && typeof PushNotificationManager !== 'undefined') {
                             PushNotificationManager.notifyNewMessage(getMessageSenderName(msg, state.allChats[msg.chatId]), msg.content);
                          }
                     }
@@ -7278,6 +9496,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 if (
                     msg.senderId !== state.currentUser.userId &&
                     !isUserMutedLocally(msg.senderId) &&
+                    !isChatMutedLocally(msg.chatId) &&
                     state.currentChat?.chatId === msg.chatId &&
                     state.allChats[msg.chatId]?.chatType === 'private' &&
                     isCurrentChatActivelyVisible()
@@ -7286,20 +9505,29 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
             }
 
+            trimChatMessages(msg.chatId, state.currentChat?.chatId === msg.chatId ? ACTIVE_CHAT_MESSAGE_LIMIT : INACTIVE_CHAT_MESSAGE_LIMIT);
+
             updateChatMetadata(msg.chatId);
     }
 
         function handleMessageUpdate(msg) { const chat = state.allChats[msg.chatId]; if(!chat) return; const msgIndex = chat.messages.findIndex(m => m.messageId === msg.messageId); if(msgIndex > -1) { const updatedMsg = { ...chat.messages[msgIndex], content: msg.newContent, ...parseMessageContent(msg.newContent), editedAt: msg.editedAt }; chat.messages[msgIndex] = updatedMsg; if(state.currentChat?.chatId === msg.chatId) ui.renderMessage(updatedMsg); updateChatMetadata(msg.chatId); } }
 
-        function onLoginClick() { 
+        async function onLoginClick() { 
             const username = state.dom.loginUsernameInput.value.trim(), password = state.dom.loginPasswordInput.value; 
             if (!username || !password) { state.dom.authError.textContent = t('auth.usernamePasswordRequired', 'Username and password are required.'); return; }
             state.dom.authError.textContent = '';
             state.dom.loginButton.innerHTML = '<div class="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto"></div>';
             state.dom.loginButton.disabled = true;
-            connect({ type: 'login_with_password', username, password, languageCode: state.currentLanguage || resolvePreferredLanguage() });
+            try {
+                const captchaToken = await runCaptchaGate('login');
+                connect({ type: 'login_with_password', username, password, languageCode: state.currentLanguage || resolvePreferredLanguage(), captchaToken });
+            } catch (error) {
+                state.dom.authError.textContent = error.message || 'Captcha failed.';
+                state.dom.loginButton.innerHTML = t('auth.login', 'Login');
+                state.dom.loginButton.disabled = false;
+            }
         }
-        function onRegisterClick() {
+        async function onRegisterClick() {
             const username = state.dom.registerUsernameInput.value.trim(), password = state.dom.registerPasswordInput.value;
             if (!username || !password) { state.dom.authError.textContent = t('auth.usernamePasswordRequired', 'Username and password are required.'); return; }
             if (password.length < PASSWORD_MIN_LENGTH) {
@@ -7309,14 +9537,36 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             state.dom.authError.textContent = '';
             state.dom.registerButton.innerHTML = '<div class="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto"></div>';
             state.dom.registerButton.disabled = true;
-            connect({ type: 'register', username, password, languageCode: state.currentLanguage || resolvePreferredLanguage() });
+            try {
+                const captchaToken = await runCaptchaGate('register');
+                connect({ type: 'register', username, password, languageCode: state.currentLanguage || resolvePreferredLanguage(), captchaToken });
+            } catch (error) {
+                state.dom.authError.textContent = error.message || 'Captcha failed.';
+                state.dom.registerButton.innerHTML = t('auth.register', 'Register');
+                state.dom.registerButton.disabled = false;
+            }
         }
         
         function openChat(chat, isUpdate = false) {
             if (state.currentChat?.chatId && state.currentChat.chatId !== chat.chatId) {
+                trimChatMessages(state.currentChat.chatId, INACTIVE_CHAT_MESSAGE_LIMIT);
                 saveChatScrollPosition(state.currentChat.chatId);
             }
             state.currentChat = state.allChats[chat.chatId] || chat; if (!state.currentChat.messages) state.currentChat.messages = [];
+            if (state.isSidebarSearchActive && state.sidebarSearchMode === 'chat') {
+                state.sidebarSearchChatId = chat.chatId;
+                state.chatSearchResults = state.sidebarSearchQuery
+                    ? searchMessagesInChat(chat.chatId, state.sidebarSearchQuery)
+                    : [];
+                if (state.dom.sidebarSearchInput) {
+                    state.dom.sidebarSearchInput.placeholder = t('menu.searchMessages', 'Search messages');
+                }
+                renderSidebarSearchResults(state.sidebarSearchQuery, state.chatSearchResults, 'chat');
+            }
+            ensureChatHistoryState(chat.chatId, {
+                hasMore: state.currentChat.hasMoreHistory ?? state.chatHistoryState[chat.chatId]?.hasMore ?? false,
+                loading: false
+            });
             if (!isUpdate) {
                 delete state.messagePages[chat.chatId];
             }
@@ -7325,9 +9575,13 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 state.isLoadingMore = false;
             }
             ui.renderContactList();
+            if (window.innerWidth < 768) {
+                state.dom.mainApp?.classList.add('chat-view-active');
+            }
             state.dom.welcomeScreen.classList.add('hidden'); state.dom.chatArea.classList.remove('hidden'); state.dom.chatArea.classList.add('flex');
             state.dom.chatHeaderInfo.classList.remove('cursor-pointer', 'hover:bg-gray-50');
             
+            state.dom.chatSearchButton?.classList.remove('hidden');
             state.dom.voiceCallButton.classList.remove('hidden');
             state.dom.voiceCallButton.classList.remove('disabled-interaction');
             updateE2EEButton(state.currentChat);
@@ -7346,7 +9600,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 state.dom.voiceCallButton.classList.add('disabled-interaction'); // Disable calls in channels
             } else if (chat.chatType === 'group') {
                 name = chat.chatName; const onlineCount = chat.members.filter(id => state.allUsers[id]?.online).length;
-                status = state.isReconnecting ? t('loading.connecting', 'Connecting...') : tr('chat.membersOnlineCount', '{members} members, {online} online', { members: chat.members.length, online: onlineCount }); avatar = generateAvatar(name, chat.chatId, null);
+                status = state.isReconnecting ? t('loading.connecting', 'Connecting...') : tr('chat.membersOnlineCount', '{members} members, {online} online', { members: chat.members.length, online: onlineCount }); avatar = generateAvatar(name, chat.chatId, chat.avatarUrl);
                 state.dom.joinChannelButton.textContent = t('chat.joinGroup', 'Join Group');
                 state.dom.joinChannelBar.classList.toggle('hidden', isMember);
                 state.dom.joinChannelBar.classList.toggle('flex', !isMember);
@@ -7362,13 +9616,14 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const otherId = chat.members.find(id => id !== state.currentUser.userId), otherUser = state.allUsers[otherId];
                 name = getUserDisplayName(otherUser, t('common.unknown', 'Unknown')); status = state.isReconnecting ? t('loading.connecting', 'Connecting...') : getPresenceLabel(otherUser);
                 avatar = generateAvatar(name, otherId, otherUser?.avatarUrl);
-                state.dom.chatName.innerHTML = renderDisplayName(name, Boolean(otherUser?.isVerified), Boolean(otherUser?.isBot));
+                state.dom.chatName.innerHTML = renderDisplayName(name, Boolean(otherUser?.isVerified), Boolean(otherUser?.isBot), otherUser?.membershipTier, otherUser?.nicknameFont, otherUser?.premiumStarIcon);
                 state.dom.chatHeaderInfo.classList.add('cursor-pointer', 'hover:bg-gray-50');
                 state.dom.joinChannelBar.classList.add('hidden'); state.dom.messageInputContainer.classList.remove('hidden');
             }
             if(chat.chatType !== 'private') {
                 state.dom.chatName.innerHTML = renderPlainDisplayName(name, Boolean(chat.isVerified));
             }
+            initTgsPlayers(state.dom.chatName).catch(() => {});
             state.dom.chatStatus.textContent = getChatStatusText(state.currentChat);
             const e2eeSession = getE2EESession(state.currentChat);
             const e2eeActive = e2eeSession?.status === 'active';
@@ -7400,12 +9655,13 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             }
             state.dom.chatAvatar.style.backgroundImage = `url(${avatar.url})`; state.dom.chatAvatar.style.backgroundColor = avatar.color;
             state.dom.chatAvatar.innerHTML = avatar.initial;
-            state.dom.chatAvatar.className = `relative mr-3 w-10 h-10 avatar-circle ${isChannel ? 'rounded-md' : ''}`;
+            state.dom.chatAvatar.className = `relative mr-3 w-10 h-10 avatar-circle`;
             renderEmptyChatPlaceholder(state.currentChat);
             if (!isUpdate) {
                 delete state.chatScrollPositions[chat.chatId];
                 state.typingUsers[chat.chatId] = {};
                 showChatLoadingSpinner(true);
+                state.historyLoadSuppressedUntil = Date.now() + 1200;
                 state.dom.messagesContainer.classList.add('chat-initial-loading');
                 state.dom.emptyChatPlaceholder.classList.add('hidden');
                 state.dom.emptyChatPlaceholder.classList.remove('flex');
@@ -7433,16 +9689,20 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         function handleMessageScroll(e) {
             if (!state.currentChat) return;
             const chatId = state.currentChat.chatId;
+            if (state.dom.messagesContainer?.classList.contains('chat-initial-loading')) return;
+            if (Date.now() < Number(state.historyLoadSuppressedUntil || 0)) return;
             saveChatScrollPosition(chatId);
-            const pageCursor = state.messagePages[chatId];
-            if (state.isLoadingMore || pageCursor === -1) return;
+            const historyState = ensureChatHistoryState(chatId);
+            if (state.isLoadingMore || historyState.loading || historyState.hasMore === false) return;
             if (e.target.scrollTop >= 100) return;
 
             state.isLoadingMore = true;
+            historyState.loading = true;
             state.dom.historyLoader.classList.remove('hidden');
             setTimeout(() => {
                 if (state.currentChat?.chatId !== chatId) {
                     state.isLoadingMore = false;
+                    historyState.loading = false;
                     state.dom.historyLoader.classList.add('hidden');
                     return;
                 }
@@ -7452,6 +9712,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
         
         function loadMoreMessages(isInitial = false) {
             const chatId = state.currentChat?.chatId;
+            const historyState = chatId ? ensureChatHistoryState(chatId) : null;
             if (!chatId) {
                 state.isLoadingMore = false;
                 hideChatLoadingSpinner();
@@ -7462,46 +9723,11 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 renderEmptyChatPlaceholder(state.currentChat);
                 state.dom.messagesContainer.classList.remove('chat-initial-loading');
                 hideChatLoadingSpinner(); state.dom.emptyChatPlaceholder.classList.remove('hidden');
-                state.dom.emptyChatPlaceholder.classList.add('flex'); state.isLoadingMore = false; state.messagePages[chatId] = -1; return;
+                state.dom.emptyChatPlaceholder.classList.add('flex'); state.isLoadingMore = false; historyState.loading = false; state.messagePages[chatId] = -1; return;
             } else { state.dom.emptyChatPlaceholder.classList.add('hidden'); state.dom.emptyChatPlaceholder.classList.remove('flex'); }
-            if (typeof state.messagePages[chatId] === 'undefined') state.messagePages[chatId] = 0;
-            const currentPage = state.messagePages[chatId];
-            if (currentPage === -1) {
-                hideChatLoadingSpinner();
-                state.isLoadingMore = false;
-                return;
-            }
-
-            // CLIENT-SIDE PAGINATION: Display 20 messages per page from stored messages
-            const INITIAL_DISPLAY = 20; // Only show last 20 on initial load
-            const PAGINATION_SIZE = 50; // Load 50 when scrolling up for older messages
-            let startIndex = 0;
-            let endIndex = allMessages.length;
-
             if (isInitial) {
-                startIndex = Math.max(0, endIndex - INITIAL_DISPLAY);
-            } else {
-                const alreadyLoaded = INITIAL_DISPLAY + (currentPage * PAGINATION_SIZE);
-                endIndex = allMessages.length - alreadyLoaded;
-                if (endIndex <= 0) {
-                    state.messagePages[chatId] = -1;
-                    hideChatLoadingSpinner();
-                    state.isLoadingMore = false;
-                    return;
-                }
-                startIndex = Math.max(0, endIndex - PAGINATION_SIZE);
-            }
-
-            const messagesToRender = allMessages.slice(startIndex, endIndex);
-            if (messagesToRender.length === 0) {
-                state.messagePages[chatId] = -1;
-                hideChatLoadingSpinner();
-                state.isLoadingMore = false;
-                return;
-            }
-            const oldScrollHeight = state.dom.messagesContainer.scrollHeight;
-            messagesToRender.reverse().forEach(msg => ui.renderMessage(msg, true));
-            if (isInitial) {
+                state.historyLoadSuppressedUntil = Date.now() + 1200;
+                allMessages.forEach(msg => ui.renderMessage(msg));
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
                         if (state.currentChat?.chatId !== chatId) return;
@@ -7511,18 +9737,28 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                         });
                     });
                 });
-            } else {
-                state.dom.messagesContainer.scrollTop = state.dom.messagesContainer.scrollHeight - oldScrollHeight;
+                historyState.initialRendered = true;
+                historyState.loading = false;
+                state.messagePages[chatId] = historyState.hasMore ? 0 : -1;
+                return;
             }
-            if (isInitial) {
-                state.messagePages[chatId] = startIndex > 0 ? 0 : -1;
-            } else {
-                state.messagePages[chatId] = startIndex > 0 ? (currentPage + 1) : -1;
-            }
-            if (!isInitial) {
+            const oldestMessage = getOldestLoadedMessage(chatId);
+            if (!oldestMessage || historyState.hasMore === false) {
+                historyState.loading = false;
+                state.messagePages[chatId] = -1;
                 hideChatLoadingSpinner();
                 state.isLoadingMore = false;
+                return;
             }
+            const beforeTimestamp = Number(oldestMessage.timestamp || 0);
+            if (!beforeTimestamp || historyState.lastRequestedBefore === beforeTimestamp) {
+                historyState.loading = false;
+                hideChatLoadingSpinner();
+                state.isLoadingMore = false;
+                return;
+            }
+            historyState.lastRequestedBefore = beforeTimestamp;
+            state.socket?.send(JSON.stringify({ type: 'load_older_messages', chatId, beforeTimestamp }));
         }
 		
 		// Stickers functionality
@@ -7807,6 +10043,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 		function toggleStickersModal() {
 			const isHidden = state.dom.stickersModal.classList.contains('hidden');
 			if (isHidden) {
+				closeAttachPanels();
 				state.dom.stickersModal.classList.remove('hidden');
 				if (!stickersCache) {
 					loadStickers();
@@ -7816,7 +10053,194 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 			}
 		}
 
-        function sendSticker(stickerInput) {
+        function closeAttachPanels() {
+            state.dom.attachMenuPanel?.classList.add('hidden');
+            ui.closeModal(state.dom.pollComposerModal);
+        }
+
+        function openAttachMenuPanel() {
+            state.dom.stickersModal?.classList.add('hidden');
+            ui.closeModal(state.dom.pollComposerModal);
+            state.dom.attachMenuPanel?.classList.remove('hidden');
+        }
+
+        function addPollOptionInput(value = '') {
+            const container = state.dom.pollOptionsContainer;
+            if (!container) return;
+            const currentInputs = container.querySelectorAll('.poll-option-input');
+            if (currentInputs.length >= 6) return;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'poll-option-input w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500';
+            input.placeholder = t('polls.optionPlaceholder', 'Option');
+            input.value = value;
+            container.appendChild(input);
+            syncPollComposerMode();
+        }
+
+        function syncPollComposerMode() {
+            const examMode = Boolean(state.dom.pollExamModeToggle?.checked);
+            if (examMode && state.dom.pollAnonymousToggle) {
+                state.dom.pollAnonymousToggle.checked = false;
+                state.dom.pollAnonymousToggle.disabled = true;
+            } else if (state.dom.pollAnonymousToggle) {
+                state.dom.pollAnonymousToggle.disabled = false;
+            }
+            state.dom.pollCorrectOptionRow?.classList.toggle('hidden', !examMode);
+            const select = state.dom.pollCorrectOptionSelect;
+            if (!select) return;
+            const optionInputs = Array.from(state.dom.pollOptionsContainer?.querySelectorAll('.poll-option-input') || []);
+            const currentValue = select.value;
+            const nextOptions = optionInputs
+                .map((input, index) => ({ value: `option-${index + 1}`, text: String(input.value || '').trim() || tr('polls.optionNumber', 'Option {number}', { number: index + 1 }) }))
+                .slice(0, 6);
+            select.innerHTML = nextOptions.map((option) => `<option value="${escapeAttr(option.value)}">${escapeHtml(option.text)}</option>`).join('');
+            if (nextOptions.some((option) => option.value === currentValue)) {
+                select.value = currentValue;
+            }
+        }
+
+        function resetPollComposer() {
+            if (state.dom.pollQuestionInput) state.dom.pollQuestionInput.value = '';
+            if (state.dom.pollOptionsContainer) {
+                const inputs = Array.from(state.dom.pollOptionsContainer.querySelectorAll('.poll-option-input'));
+                inputs.forEach((input, index) => {
+                    if (index < 2) {
+                        input.value = '';
+                    } else {
+                        input.remove();
+                    }
+                });
+            }
+            if (state.dom.pollAnonymousToggle) state.dom.pollAnonymousToggle.checked = false;
+            if (state.dom.pollExamModeToggle) state.dom.pollExamModeToggle.checked = false;
+            if (state.dom.pollResultsAfterVoteToggle) state.dom.pollResultsAfterVoteToggle.checked = false;
+            if (state.dom.pollTimerSelect) state.dom.pollTimerSelect.value = '0';
+            syncPollComposerMode();
+        }
+
+        function openPollComposerPanel() {
+            state.dom.attachMenuPanel?.classList.add('hidden');
+            state.dom.stickersModal?.classList.add('hidden');
+            syncPollComposerMode();
+            ui.openModal(state.dom.pollComposerModal);
+            state.dom.pollQuestionInput?.focus();
+        }
+
+        async function sendPoll() {
+            if (!assertUserNotBanned('send polls')) return;
+            if (!state.currentChat || state.socket?.readyState !== WebSocket.OPEN) return;
+            const question = String(state.dom.pollQuestionInput?.value || '').trim();
+            const optionInputs = Array.from(state.dom.pollOptionsContainer?.querySelectorAll('.poll-option-input') || []);
+            const options = optionInputs
+                .map((input) => String(input.value || '').trim())
+                .filter(Boolean)
+                .slice(0, 6)
+                .map((text, index) => ({ id: `option-${index + 1}`, text }));
+            const examMode = Boolean(state.dom.pollExamModeToggle?.checked);
+            const anonymous = examMode ? false : Boolean(state.dom.pollAnonymousToggle?.checked);
+            const resultsAfterVote = Boolean(state.dom.pollResultsAfterVoteToggle?.checked);
+            const durationSeconds = Math.max(0, Number.parseInt(state.dom.pollTimerSelect?.value || '0', 10) || 0);
+            if (!question) {
+                showErrorModal(t('polls.title', 'Polls'), t('polls.questionRequired', 'Enter a question for the poll.'));
+                return;
+            }
+            if (options.length < 2) {
+                showErrorModal(t('polls.title', 'Polls'), t('polls.optionsRequired', 'Add at least two options.'));
+                return;
+            }
+            let correctOptionId = null;
+            if (examMode) {
+                correctOptionId = String(state.dom.pollCorrectOptionSelect?.value || '');
+                if (!correctOptionId || !options.some((option) => option.id === correctOptionId)) {
+                    showErrorModal(t('polls.title', 'Polls'), t('polls.correctAnswerRequired', 'Choose the correct answer for exam mode.'));
+                    return;
+                }
+            }
+            const replyId = state.replyingToMessage ? state.replyingToMessage.messageId : null;
+            let captchaToken = '';
+            let chatId = state.currentChat.chatId;
+            let recipientId = null;
+            if (chatId.startsWith('temp_')) {
+                recipientId = state.currentChat.members.find(id => id !== state.currentUser.userId);
+                if (recipientId && !state.allUsers[recipientId]?.isBot) {
+                    try {
+                        captchaToken = await runCaptchaGate('dm_start', { targetUserId: recipientId });
+                    } catch (error) {
+                        showErrorModal('Captcha Required', error.message || 'Captcha failed.');
+                        return;
+                    }
+                }
+            }
+            const content = {
+                text: null,
+                file: null,
+                theme: null,
+                poll: { question, options, anonymous, examMode, resultsAfterVote, durationSeconds, correctOptionId }
+            };
+            const tempId = 'temp-' + Date.now() + Math.random().toString(36).substr(2, 9);
+            const tempMsg = {
+                messageId: tempId,
+                chatId,
+                senderId: state.currentUser.userId,
+                content: JSON.stringify(content),
+                timestamp: Date.now() / 1000,
+                pending: true,
+                seenBy: [],
+                text: null,
+                file: null,
+                theme: null,
+                poll: {
+                    question,
+                    options: options.map((option) => ({
+                        id: option.id,
+                        text: option.text,
+                        voteCount: 0,
+                        percentage: 0,
+                        voterIds: [],
+                    })),
+                    totalVotes: 0,
+                    viewerChoiceId: null,
+                    anonymous,
+                    examMode,
+                    resultsAfterVote,
+                    correctOptionId: examMode ? correctOptionId : null,
+                    canVote: true,
+                    canSeeResults: !resultsAfterVote,
+                    canViewVotes: false,
+                    expiresAt: durationSeconds > 0 ? Math.floor(Date.now() / 1000) + durationSeconds : null,
+                    isExpired: false,
+                },
+                replyToId: replyId
+            };
+            if (state.allChats[chatId]) {
+                state.allChats[chatId].messages.push(tempMsg);
+            }
+            if (state.currentChat?.chatId === chatId) {
+                hideEmptyChatPlaceholder();
+                ui.renderMessage(tempMsg);
+                forceScrollChatToBottom(chatId);
+            }
+            let payload = {
+                type: 'message',
+                content,
+                chatId,
+                replyToId: replyId,
+                clientTempId: tempId
+            };
+            if (chatId.startsWith('temp_')) {
+                payload.recipientId = recipientId;
+                state.pendingRecipientId = recipientId;
+                if (captchaToken) payload.captchaToken = captchaToken;
+                delete payload.chatId;
+            }
+            closeAttachPanels();
+            resetPollComposer();
+            if (typeof cancelReplyMode === 'function') cancelReplyMode();
+            state.socket.send(JSON.stringify(payload));
+        }
+
+        async function sendSticker(stickerInput) {
 		  if (!assertUserNotBanned('send messages')) return;
 		  if (!state.currentChat || state.socket?.readyState !== WebSocket.OPEN) return;
 
@@ -7830,12 +10254,32 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 		  const stickerFileMeta = getStickerFileMeta(stickerInput);
 		  if (!stickerFileMeta.url) return;
 		  const stickerFile = { url: stickerFileMeta.url, name: stickerFileMeta.name, type: stickerFileMeta.type };
+          let captchaToken = '';
+          let chatId = state.currentChat.chatId;
+          let recipientId = null;
+          if (chatId.startsWith('temp_')) {
+            recipientId = state.currentChat.members.find(id => id !== state.currentUser.userId);
+            if (recipientId && !state.allUsers[recipientId]?.isBot) {
+                try {
+                    captchaToken = await runCaptchaGate('dm_start', { targetUserId: recipientId });
+                } catch (error) {
+                    showErrorModal('Captcha Required', error.message || 'Captcha failed.');
+                    return;
+                }
+            }
+          }
 		  const payload = {
 			type: 'message',
 			content: { text: null, file: stickerFile, theme: null },
-			chatId: state.currentChat.chatId,
+			chatId,
 			replyToId: replyId,
 		  };
+          if (chatId.startsWith('temp_')) {
+            payload.recipientId = recipientId;
+            if (captchaToken) payload.captchaToken = captchaToken;
+            delete payload.chatId;
+            state.pendingRecipientId = recipientId;
+          }
 
           hideEmptyChatPlaceholder();
 		  state.socket.send(JSON.stringify(payload));
@@ -7862,9 +10306,16 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             const currentChatAttachment = state.attachedFileChatId === state.currentChat?.chatId ? state.attachedFile : null;
             const text = (forcedText == null ? state.dom.messageInput.value : String(forcedText)).trim(), file = currentChatAttachment;
             if ((!text && !file) || !state.currentChat || state.socket?.readyState !== WebSocket.OPEN) return;
+            if (!file && isEmailBotChat(state.currentChat) && text.toLowerCase() === '/send') {
+                state.dom.messageInput.value = '';
+                state.dom.messageInput.style.height = 'auto';
+                openEmailComposerModal();
+                return;
+            }
             const sendingChat = state.currentChat;
             const sendingChatId = sendingChat.chatId;
             const replyId = state.replyingToMessage ? state.replyingToMessage.messageId : null;
+            let captchaToken = '';
             hideEmptyChatPlaceholder();
             if (state.currentChat.chatType === 'private') {
                 const peerId = getPrivateChatPeerId(state.currentChat);
@@ -7924,6 +10375,18 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 }
             }
 
+            if (sendingChatId.startsWith('temp_')) {
+                const recipientId = sendingChat.members.find(id => id !== state.currentUser.userId);
+                if (recipientId && !state.allUsers[recipientId]?.isBot) {
+                    try {
+                        captchaToken = await runCaptchaGate('dm_start', { targetUserId: recipientId });
+                    } catch (error) {
+                        showErrorModal('Captcha Required', error.message || 'Captcha failed.');
+                        return;
+                    }
+                }
+            }
+
             // 1. Prepare Content Object
             let content = { text: text || null, file: null, theme: null };
             if (file && state.attachedFile === file && state.attachedFileChatId === sendingChatId) {
@@ -7932,37 +10395,19 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 
             // Handle File (Keep original logic)
             if (file) {
-                if (isThemeFile(file)) {
-                    try {
-                        const themeData = JSON.parse(await file.text());
-                        if (!themeData || !themeData.name || !themeData.description || !themeData.css) {
-                            throw new Error('Invalid .gct format.');
-                        }
-                        content.theme = {
-                            name: String(themeData.name),
-                            description: String(themeData.description),
-                            css: String(themeData.css),
-                        };
-                    } catch (error) {
-                        showErrorModal('Theme Error', 'Failed to read the selected theme file.');
-                        ui.hideFilePreview();
-                        return;
+                try {
+                    const fileInfo = await uploadFile(file, '/upload/file', {
+                        chatId: sendingChatId,
+                        showComposerProgress: true
+                    });
+                    if (!fileInfo) return;
+                    content.file = fileInfo.file;
+                    if (content.file && isVoiceRecorderFileName(file.name)) {
+                        content.file.name = 'Voice Message';
                     }
-                } else {
-                    try {
-                        const fileInfo = await uploadFile(file, '/upload/file', {
-                            chatId: sendingChatId,
-                            showComposerProgress: true
-                        });
-                        if (!fileInfo) return;
-                        content.file = fileInfo.file;
-                        if (content.file && isVoiceRecorderFileName(file.name)) {
-                            content.file.name = 'Voice Message';
-                        }
-                    } catch (error) {
-                        showErrorModal('Upload Failed', error.message || 'File upload failed.');
-                        return;
-                    }
+                } catch (error) {
+                    showErrorModal('Upload Failed', error.message || 'File upload failed.');
+                    return;
                 }
             }
 
@@ -8017,6 +10462,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
                 const recipientId = sendingChat.members.find(id => id !== state.currentUser.userId); 
                 payload.recipientId = recipientId; 
                 state.pendingRecipientId = recipientId; 
+                if (captchaToken) payload.captchaToken = captchaToken;
                 delete payload.chatId; 
             }
 
@@ -8044,7 +10490,7 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 			const replyIsVerified = state.currentChat?.chatType !== 'private'
 				? isMessageSenderVerified(message, state.currentChat)
 				: Boolean(state.currentChat?.otherUserId && state.allUsers[state.currentChat.otherUserId]?.isVerified);
-			state.dom.replyPreviewUsername.innerHTML = renderDisplayName(senderName, replyIsVerified, Boolean(sender?.isBot));
+			state.dom.replyPreviewUsername.innerHTML = renderDisplayName(senderName, replyIsVerified, Boolean(sender?.isBot), sender?.membershipTier, sender?.nicknameFont, sender?.premiumStarIcon);
 
 			// Set message preview content
 			let previewText = '';
@@ -8549,6 +10995,9 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
 			}
 			
 			leaveVoiceChat();
+			if (typeof PushNotificationManager !== 'undefined' && state.currentUser?.userId && state.sessionToken) {
+				PushNotificationManager.detachSubscription(state.currentUser.userId, state.sessionToken, false).catch(() => {});
+			}
 			ui.updateUiForAuthState(false);
 			getStorage().clearSession();
             state.sessionToken = null;
@@ -8650,18 +11099,25 @@ const LANGUAGE_VERSION_TAG = '20260406_60';
             return selectMessageEl();
         }
 
-        async function scrollToMessage(messageId) {
+        async function waitForChatRenderCycle() {
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        }
+
+        async function scrollToMessage(messageId, options = {}) {
             const chatId = state.currentChat?.chatId;
             const messageEl = await ensureMessageRendered(messageId, chatId);
-            if (state.currentChat?.chatId !== chatId) return;
+            if (state.currentChat?.chatId !== chatId) return false;
             if (messageEl) {
                 messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 messageEl.classList.remove('message-highlight');
                 void messageEl.offsetWidth;
                 messageEl.classList.add('message-highlight');
-                return;
+                return true;
             }
-            showErrorModal('Message Not Found', 'The original message could not be found in this chat.');
+            if (!options.suppressError) {
+                showErrorModal('Message Not Found', 'The original message could not be found in this chat.');
+            }
+            return false;
         }
 
         
@@ -8682,7 +11138,7 @@ function renderGroupMembersList() {
 
   users.forEach(user => {
     const avatar = generateAvatar(user.username, user.userId, user.avatarUrl);
-    const nameHtml = renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot));
+    const nameHtml = renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon);
 
     const row = document.createElement('label');
     row.className = 'app-list-row app-list-row-hover flex items-center gap-3 p-2 rounded-lg cursor-pointer transition';
@@ -8722,6 +11178,7 @@ async function handleCreateGroup(e) {
       handleLogoutSequence(false);
       return;
     }
+    const captchaToken = await runCaptchaGate('create_group');
     const response = await fetch(resolveServerUrl('/create_group'), {
       method: 'POST',
       headers: {
@@ -8729,7 +11186,7 @@ async function handleCreateGroup(e) {
         'X-User-ID': state.currentUser.userId,
         'X-Auth-Token': session?.token
       },
-      body: JSON.stringify({ name, members })
+      body: JSON.stringify({ name, members, captchaToken })
     });
 
     const result = await response.json().catch(() => null);
@@ -8764,6 +11221,8 @@ async function handleCreateChannel(e) {
                 return;
             }
             try {
+                const captchaToken = await runCaptchaGate('create_channel');
+                formData.set('captchaToken', captchaToken);
                 const response = await fetch(`${SERVER_URL}/create_channel`, { method: 'POST', headers: { 'X-User-ID': state.currentUser.userId, 'X-Auth-Token': session.token }, body: formData });
                 if (!response.ok) {
                     const errorText = await response.text();
@@ -9100,6 +11559,10 @@ async function handleCreateChannel(e) {
             }
             if (state.allChats[chatId]) state.allChats[chatId].avatarUrl = result.url || state.allChats[chatId].avatarUrl;
             if (state.chatSettingsProfiles[chatId]) state.chatSettingsProfiles[chatId].avatarUrl = result.url || state.chatSettingsProfiles[chatId].avatarUrl;
+            if (state.currentChat?.chatId === chatId) {
+                state.currentChat.avatarUrl = result.url || state.currentChat.avatarUrl;
+                openChat(state.currentChat, true);
+            }
             ui.renderContactList();
             return result.url || null;
         }
@@ -9111,6 +11574,8 @@ async function handleCreateChannel(e) {
         async function openChatAdminSettingsModal(chatId) {
             const chat = state.allChats[chatId];
             if (!chat) return;
+            const isMember = chat.ownerId === state.currentUser?.userId || (chat.members || []).includes(state.currentUser?.userId);
+            if (!isMember) return;
             const profile = await fetchChatSettingsProfile(chatId, true);
             if (!profile) return;
             closeChatAdminSettingsModal();
@@ -9143,6 +11608,10 @@ async function handleCreateChannel(e) {
                                     <div class="profile-sheet-form-field mt-4">
                                         <label class="profile-sheet-form-label" for="chatAdminBioInput">${escapeHtml(t('profile.bio', 'Bio'))}</label>
                                         <textarea id="chatAdminBioInput" class="profile-sheet-textarea" placeholder="${escapeAttr(t('profile.bioPlaceholder', 'Tell people a bit about yourself.'))}">${escapeHtml(profile.bio || '')}</textarea>
+                                    </div>
+                                    <div class="profile-sheet-form-field mt-4">
+                                        <label class="profile-sheet-form-label">${escapeHtml(t('chat.privateInvite', 'Private Invite'))}</label>
+                                        <input type="text" class="profile-sheet-input" value="${escapeAttr(profile.privateHandle || '')}" readonly>
                                     </div>
                                     <div class="mt-4 flex flex-wrap gap-3">
                                         <button id="chatAdminSaveProfileBtn" type="button" class="profile-sheet-primary-button">${escapeHtml(t('common.save', 'Save'))}</button>
@@ -9189,9 +11658,23 @@ async function handleCreateChannel(e) {
             `;
             document.body.appendChild(modal);
             const avatarButton = modal.querySelector('#chatAdminAvatarButton');
-            avatarButton.style.backgroundImage = `url(${avatar.url})`;
-            avatarButton.style.backgroundColor = avatar.color;
-            avatarButton.innerHTML = avatar.url ? '' : avatar.initial;
+            const syncChatAdminProfilePatch = (patch = {}) => {
+                Object.assign(profile, patch);
+                if (state.chatSettingsProfiles[chatId]) Object.assign(state.chatSettingsProfiles[chatId], patch);
+                if (state.allChats[chatId]) Object.assign(state.allChats[chatId], patch);
+                if (state.currentChat?.chatId === chatId) {
+                    Object.assign(state.currentChat, patch);
+                    openChat(state.currentChat, true);
+                }
+                ui.renderContactList();
+            };
+            const renderChatAdminAvatar = () => {
+                const nextAvatar = generateAvatar(profile.chatName || chat.chatName || chat.chatId, chat.chatId, profile.avatarUrl || chat.avatarUrl, isChannel);
+                avatarButton.style.backgroundImage = `url(${nextAvatar.url})`;
+                avatarButton.style.backgroundColor = nextAvatar.color;
+                avatarButton.innerHTML = nextAvatar.url ? '' : nextAvatar.initial;
+            };
+            renderChatAdminAvatar();
             modal.querySelectorAll('[data-close-admin-settings]').forEach((button) => {
                 button.addEventListener('click', closeChatAdminSettingsModal);
             });
@@ -9208,19 +11691,22 @@ async function handleCreateChannel(e) {
                 const bio = String(modal.querySelector('#chatAdminBioInput')?.value || '').trim();
                 const success = await performChatSettingsAction('update_profile', chatId, { chatName, bio }, { skipCloseModal: true });
                 if (!success) return;
-                await fetchChatSettingsProfile(chatId, true);
-                openChatSettings(chatId, 'bio');
-                openChatAdminSettingsModal(chatId);
+                syncChatAdminProfilePatch({
+                    chatName: chatName || profile.chatName || chat.chatName,
+                    bio,
+                });
+                const headerName = modal.querySelector('.profile-sheet-name');
+                if (headerName) headerName.textContent = profile.chatName || chat.chatName || chat.chatId;
+                renderChatAdminAvatar();
             });
             modal.querySelector('#chatAdminAvatarButton')?.addEventListener('click', () => modal.querySelector('#chatAdminAvatarInput')?.click());
             modal.querySelector('#chatAdminAvatarInput')?.addEventListener('change', async (event) => {
                 const file = event.target.files?.[0];
                 if (!file) return;
                 try {
-                    await uploadChatAvatar(chatId, file);
-                    await fetchChatSettingsProfile(chatId, true);
-                    openChatSettings(chatId, 'bio');
-                    openChatAdminSettingsModal(chatId);
+                    const nextAvatarUrl = await uploadChatAvatar(chatId, file);
+                    syncChatAdminProfilePatch({ avatarUrl: nextAvatarUrl || profile.avatarUrl || chat.avatarUrl });
+                    renderChatAdminAvatar();
                 } catch (error) {
                     showErrorModal(t('profile.avatarUploadFailedTitle', 'Upload Failed'), error.message || t('profile.avatarUploadFailedBody', 'Avatar upload failed.'));
                 }
@@ -9248,6 +11734,8 @@ async function handleCreateChannel(e) {
         async function openChatSettings(chatId, activeTab = 'bio') {
             const chat = state.allChats[chatId];
             if (!chat) return;
+            const isMember = chat.ownerId === state.currentUser?.userId || (chat.members || []).includes(state.currentUser?.userId);
+            if (!isMember) return;
             const modal = document.getElementById('chatSettingsModal');
             const title = document.getElementById('chatSettingsTitle');
             const panel = modal?.querySelector('.modal-content');
@@ -9299,6 +11787,7 @@ async function handleCreateChannel(e) {
                 ) && !isPublicChat;
                 const canViewMembers = Boolean(profile.canViewMembers) && !isPublicChat;
                 const canSearchMembers = Boolean(profile.canSearchMembers) && !isPublicChat;
+                const isMuted = isChatMutedLocally(chatId);
                 const showMembersTab = !isPublicChat && (mergedChat.chatType === 'group' || (isChannel && canManage));
                 const tabs = [
                     { key: 'bio', label: t('profile.bio', 'Bio') },
@@ -9327,7 +11816,7 @@ async function handleCreateChannel(e) {
                             <div class="flex items-center gap-3">
                                 <div class="w-11 h-11 avatar-circle flex-shrink-0" style="background-image:url('${escapeAttr(memberAvatar.url)}');background-color:${memberAvatar.color};">${memberAvatar.initial}</div>
                                 <div class="min-w-0 flex-1">
-                                    <div class="profile-sheet-group-name truncate">${renderDisplayName(memberName, Boolean(user.isVerified), Boolean(user.isBot))}</div>
+                                    <div class="profile-sheet-group-name truncate">${renderDisplayName(memberName, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon)}</div>
                                     <div class="profile-sheet-group-meta">${escapeHtml(role)}</div>
                                 </div>
                             </div>
@@ -9340,6 +11829,10 @@ async function handleCreateChannel(e) {
                         <div class="profile-sheet-section">
                             <div class="profile-sheet-section-title">${escapeHtml(t('chat.handle', 'Handle'))}</div>
                             <p class="profile-sheet-id">${escapeHtml(profile.handle || t('chat.noHandle', 'No handle'))}</p>
+                        </div>
+                        <div class="profile-sheet-section">
+                            <div class="profile-sheet-section-title">${escapeHtml(t('chat.privateInvite', 'Private Invite'))}</div>
+                            <p class="profile-sheet-id">${escapeHtml(profile.privateHandle || t('chat.noHandle', 'No handle'))}</p>
                         </div>
                         <div class="profile-sheet-section">
                             <div class="profile-sheet-section-title">${escapeHtml(t('profile.bio', 'Bio'))}</div>
@@ -9379,8 +11872,9 @@ async function handleCreateChannel(e) {
                 body.innerHTML = `
                     <div class="profile-sheet profile-sheet-settings">
                         <button id="chatSettingsCloseInlineBtn" class="absolute top-3 right-3 z-10 h-10 w-10 rounded-full bg-gray-100 text-xl text-gray-500 hover:text-gray-700">&times;</button>
-                        ${canManage ? `<button id="chatSettingsGearButton" class="absolute top-3 left-3 z-10 h-10 w-10 rounded-full bg-gray-100 text-lg text-blue-600 hover:text-blue-700 interactive-pop" type="button" title="${escapeAttr(t('chat.chatSettings', 'Chat Settings'))}"><i class="fas fa-gear"></i></button>` : ''}
-                        <div class="profile-sheet-header pr-12 pl-12">
+                        <button id="chatSettingsMuteButton" class="absolute top-3 left-3 z-10 h-10 w-10 rounded-full bg-gray-100 text-lg text-gray-500 hover:text-gray-700 interactive-pop" type="button" title="${escapeAttr(isMuted ? t('profile.unmuteNotifications', 'Unmute notifications') : t('profile.muteNotifications', 'Mute notifications'))}" aria-label="${escapeAttr(isMuted ? t('profile.unmuteNotifications', 'Unmute notifications') : t('profile.muteNotifications', 'Mute notifications'))}"><i class="fas ${isMuted ? 'fa-volume-xmark' : 'fa-volume-high'}"></i></button>
+                        ${canManage ? `<button id="chatSettingsGearButton" class="absolute top-3 left-16 z-10 h-10 w-10 rounded-full bg-gray-100 text-lg text-blue-600 hover:text-blue-700 interactive-pop" type="button" title="${escapeAttr(t('chat.chatSettings', 'Chat Settings'))}"><i class="fas fa-gear"></i></button>` : ''}
+                        <div class="profile-sheet-header pt-14 pr-12 pl-12">
                             <div class="profile-sheet-avatar ${isChannel ? 'chat-profile-avatar-channel' : 'avatar-circle'} shadow-sm" style="background-image:url('${escapeAttr(avatar.url)}');background-color:${avatar.color};">${avatar.url ? '' : avatar.initial}</div>
                             <div class="min-w-0 flex-1">
                                 <h3 class="profile-sheet-name flex items-center leading-tight">${renderPlainDisplayName(displayName, Boolean(profile.isVerified || mergedChat.isVerified))}</h3>
@@ -9401,6 +11895,10 @@ async function handleCreateChannel(e) {
                     </div>
                 `;
                 body.querySelector('#chatSettingsCloseInlineBtn')?.addEventListener('click', () => ui.closeModal(modal));
+                body.querySelector('#chatSettingsMuteButton')?.addEventListener('click', () => {
+                    toggleLocalChatMute(chatId);
+                    openChatSettings(chatId, activeTab);
+                });
                 body.querySelectorAll('[data-chat-profile-tab]').forEach((button) => {
                     button.addEventListener('click', () => openChatSettings(chatId, button.dataset.chatProfileTab || 'bio'));
                 });
@@ -9431,6 +11929,7 @@ async function handleCreateChannel(e) {
         function openEditHandleModal(chatId) {
             const chat = state.allChats[chatId];
             if (!chat) return;
+            closeChatAdminSettingsModal();
             state.dom.editHandleInput.value = String(chat.handle || '').replace(/^@/, '');
             state.dom.editHandleError.textContent = '';
             state.dom.editHandleSaveBtn.onclick = async () => {
@@ -9554,14 +12053,14 @@ async function handleCreateChannel(e) {
             const selectedMembers = {};
             
             const memberListHtml = Object.values(state.allUsers)
-                .filter(u => u && u.userId && !currentMembers.includes(u.userId))
+                .filter(u => u && u.userId && !currentMembers.includes(u.userId) && state.contactIds.has(u.userId))
                 .map(user => {
                     const avatar = generateAvatar(user.username, user.userId, user.avatarUrl);
                     return `<label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
                         <input type="checkbox" class="member-checkbox h-4 w-4 rounded" value="${escapeAttr(user.userId)}">
                         <div class="w-10 h-10 avatar-circle flex-shrink-0" style="background-image: url('${escapeAttr(avatar.url)}'); background-color: ${avatar.color};">${avatar.initial}</div>
                         <div class="flex-1">
-                            <div class="font-semibold">${renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot))}</div>
+                            <div class="font-semibold">${renderDisplayName(user.username, Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon)}</div>
                             <div class="text-xs text-gray-500">${escapeHtml(getPresenceLabel(user))}</div>
                         </div>
                     </label>`;
@@ -9573,6 +12072,7 @@ async function handleCreateChannel(e) {
                         <h2 class="text-xl font-bold">${escapeHtml(tr('chat.addMembersTo', 'Add Members to {chat}', { chat: chat.chatName || t('chat.chatFallback', 'Chat') }))}</h2>
                         <button class="text-xl p-2" data-action="close-add-members-modal">&times;</button>
                     </div>
+                    <div class="px-4 pt-3 text-xs app-text-muted">${escapeHtml(t('chat.contactsOnlyMembers', 'Only your contacts can be added here.'))}</div>
                     <div id="addMembersListContainer" class="p-2 max-h-80 overflow-y-auto custom-scrollbar space-y-2">${memberListHtml || `<div class="text-center text-gray-500 p-4">${escapeHtml(t('chat.noMembersToAdd', 'No members to add'))}</div>`}</div>
                     <div class="p-4 bg-gray-50 border-t flex justify-end items-center gap-2">
                         <button class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg interactive-pop" data-action="close-add-members-modal">${escapeHtml(t('common.cancel', 'Cancel'))}</button>
@@ -9628,7 +12128,7 @@ async function handleCreateChannel(e) {
                                 <input type="radio" name="transferOwnershipMember" class="h-4 w-4 rounded" value="${escapeAttr(user.userId)}">
                                 <div class="w-10 h-10 avatar-circle flex-shrink-0" style="background-image: url('${escapeAttr(avatar.url)}'); background-color: ${avatar.color};">${avatar.initial}</div>
                                 <div class="flex-1">
-                                    <div class="font-semibold">${renderDisplayName(getUserDisplayName(user), Boolean(user.isVerified), Boolean(user.isBot))}</div>
+                                    <div class="font-semibold">${renderDisplayName(getUserDisplayName(user), Boolean(user.isVerified), Boolean(user.isBot), user.membershipTier, user.nicknameFont, user.premiumStarIcon)}</div>
                                     <div class="text-xs text-gray-500">${escapeHtml(getPresenceLabel(user))}</div>
                                 </div>
                             </label>`;
@@ -9665,13 +12165,659 @@ async function handleCreateChannel(e) {
             });
         }
 
+        function showPremiumFallbackIcon() {
+            state.dom.premiumStarCanvas?.classList.add('hidden');
+            state.dom.premiumStarFallback?.classList.remove('hidden');
+        }
+
+        function resizePremiumPreview() {
+            const renderer = premiumPreviewState.renderer;
+            const canvas = premiumPreviewState.activeCanvas;
+            const camera = premiumPreviewState.camera;
+            if (!renderer || !canvas || !camera) return;
+            const rect = canvas.getBoundingClientRect();
+            const size = Math.max(120, Math.min(rect.width || 160, rect.height || 160));
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+            renderer.setSize(size, size, false);
+            camera.aspect = 1;
+            camera.updateProjectionMatrix();
+            const particlesCanvas = state.dom.premiumParticlesCanvas;
+            if (particlesCanvas) {
+                const parentRect = particlesCanvas.getBoundingClientRect();
+                particlesCanvas.width = Math.max(1, Math.floor(parentRect.width));
+                particlesCanvas.height = Math.max(1, Math.floor(parentRect.height));
+                premiumPreviewState.particlesCanvas = particlesCanvas;
+                premiumPreviewState.particlesCtx = particlesCanvas.getContext('2d');
+            }
+            if (!premiumPreviewState.particles.length) {
+                premiumPreviewState.particles = Array.from({ length: 24 }, () => ({
+                    angle: Math.random() * Math.PI * 2,
+                    radius: 44 + Math.random() * 50,
+                    speed: 0.18 + Math.random() * 0.42,
+                    size: 1.4 + Math.random() * 2.8,
+                    alpha: 0.2 + Math.random() * 0.55,
+                    wobble: Math.random() * Math.PI * 2
+                }));
+            }
+        }
+
+        function drawPremiumParticles(tsSeconds) {
+            const canvas = premiumPreviewState.particlesCanvas;
+            const ctx = premiumPreviewState.particlesCtx;
+            if (!canvas || !ctx) return;
+            const w = canvas.width;
+            const h = canvas.height;
+            const cx = w / 2;
+            const cy = h / 2;
+            const baseRadius = Math.min(w, h) * 0.24;
+            const isSilver = state.subscriptionModalTier === 'silver';
+            const outerColor = isSilver ? '203, 213, 225' : '168, 85, 247';
+            const innerColor = isSilver ? '255, 255, 255' : '255, 255, 255';
+            ctx.clearRect(0, 0, w, h);
+            for (const particle of premiumPreviewState.particles) {
+                particle.angle += particle.speed * 0.0026;
+                particle.wobble += 0.03;
+                const radius = baseRadius + particle.radius * 0.55 + Math.sin(tsSeconds * 1.7 + particle.wobble) * 8;
+                const x = cx + Math.cos(particle.angle) * radius * 1.15;
+                const y = cy + Math.sin(particle.angle) * radius * 0.88;
+                const size = particle.size * (1 + Math.sin(tsSeconds * 2.3 + particle.wobble) * 0.18);
+                const alpha = particle.alpha * (0.72 + Math.sin(tsSeconds * 2 + particle.wobble) * 0.28);
+                ctx.fillStyle = `rgba(${outerColor}, ${Math.max(0.08, alpha)})`;
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = `rgba(${innerColor}, ${Math.max(0.08, alpha * 0.65)})`;
+                ctx.beginPath();
+                ctx.arc(x, y, Math.max(0.5, size * 0.42), 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function applyPremiumPreviewPalette() {
+            const isSilver = state.subscriptionModalTier === 'silver';
+            if (premiumPreviewState.material) {
+                premiumPreviewState.material.color.setHex(isSilver ? 0xcbd5e1 : 0x9f4fff);
+                premiumPreviewState.material.emissive.setHex(isSilver ? 0x94a3b8 : 0x5b21b6);
+                premiumPreviewState.material.emissiveIntensity = isSilver ? 0.18 : 0.24;
+                premiumPreviewState.material.needsUpdate = true;
+            }
+            state.dom.premiumModal?.querySelector('.premium-modal')?.classList.toggle('is-silver', isSilver);
+            state.dom.premiumPaymentModal?.querySelector('.premium-payment-modal')?.classList.toggle('is-silver', isSilver);
+        }
+
+        function getSubscriptionModalContent(tier = 'premium') {
+            if (tier === 'silver') {
+                return {
+                    title: t('premium.silverHeroTitle', 'Get Silver'),
+                    lines: [
+                        t('premium.silverBenefitCapacity', 'Create up to 7 Groups/Channels'),
+                        t('premium.silverBenefitFiles', 'Upload files up to 50mb!'),
+                        t('premium.silverBenefitFonts', 'Have custom fonts on your Name!'),
+                        t('premium.silverBenefitStars', 'Get 40 Stars for FREE!'),
+                    t('premium.silverBenefitDeepSeek', 'Talk with AI models'),
+                    ],
+                    buyLabel: t('premium.buySilverNow', 'Buy Silver'),
+                    paymentTitle: t('premium.silverPaymentTitle', 'Silver Payment'),
+                    paymentAmount: t('premium.silverPaymentAmount', '35,000 Tomans'),
+                    paymentInstructions: t('premium.silverPaymentInstructions', 'Send the payment to the card below, then upload the receipt image for Silver review.'),
+                    submitLabel: t('premium.submitSilverPayment', 'Send Silver Payment Request')
+                };
+            }
+            return {
+                title: t('premium.heroTitleDefault', 'Get Premium'),
+                lines: [
+                    t('premium.benefitQuality', 'Stream with much better Quality!'),
+                    t('premium.benefitCapacity', 'Create up to 10 Groups/Channels'),
+                    t('premium.benefitOutsideIran', 'Talk with AI models'),
+                    t('premium.benefitFiles', 'Upload files up to 100mb!'),
+                    t('premium.benefitFonts', 'Have custom fonts on your Name!'),
+                    t('premium.benefitColors', 'Color everything on your Profile!'),
+                    t('premium.benefitStars', 'Get 100 Stars for FREE!')
+                ],
+                buyLabel: t('premium.buy', 'Buy Premium'),
+                paymentTitle: t('premium.paymentTitle', 'Premium Payment'),
+                paymentAmount: t('premium.paymentAmount', '50,000 Tomans'),
+                paymentInstructions: t('premium.paymentInstructions', 'Send the payment to the card below, then upload the receipt image.'),
+                submitLabel: t('premium.submitPayment', 'Send Payment Request')
+            };
+        }
+
+        function resolveSubscriptionModalContext() {
+            const currentTierRank = getMembershipTierRank(getCurrentViewerMembershipTier());
+            const actionTier = String(state.subscriptionModalAction || '').toLowerCase();
+            const modalTier = String(state.subscriptionModalTier || '').toLowerCase();
+            const modalSource = String(state.subscriptionModalSource || '').toLowerCase();
+            const isProfileBadgeContext = modalSource === 'profile_badge';
+            const isOwnedContext = isProfileBadgeContext && !actionTier && ((modalTier === 'silver' && currentTierRank >= 1) || (modalTier === 'premium' && currentTierRank >= 2) || (!modalTier && currentTierRank >= 2));
+            if (isOwnedContext) {
+                return {
+                    displayTier: modalTier || 'premium',
+                    actionTier: '',
+                    owned: true,
+                    source: 'profile_badge',
+                    title: t('premium.alreadyHaveIt', 'You have it Already!'),
+                    buyLabel: t('profile.viewProfile', 'View Profile'),
+                    paymentTitle: modalTier === 'silver'
+                        ? t('premium.silverPaymentTitle', 'Silver Payment')
+                        : t('premium.paymentTitle', 'Premium Payment'),
+                    paymentAmount: modalTier === 'silver'
+                        ? t('premium.silverPaymentAmount', '35,000 Tomans')
+                        : t('premium.paymentAmount', '50,000 Tomans'),
+                    paymentInstructions: modalTier === 'silver'
+                        ? t('premium.silverPaymentInstructions', 'Send the payment to the card below, then upload the receipt image for Silver review.')
+                        : t('premium.paymentInstructions', 'Send the payment to the card below, then upload the receipt image.'),
+                    submitLabel: t('profile.viewProfile', 'View Profile')
+                };
+            }
+            if (modalSource === 'premium_theme') {
+                if (actionTier === 'premium_upgrade' || currentTierRank >= 1) {
+                    return {
+                        displayTier: 'premium',
+                        actionTier: 'premium_upgrade',
+                        title: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                        buyLabel: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                        paymentTitle: t('premium.upgradePaymentTitle', 'Premium Upgrade Payment'),
+                        paymentAmount: t('premium.upgradePaymentAmount', '15,000 Tomans'),
+                        paymentInstructions: t('premium.upgradePaymentInstructions', 'Send the payment to the card below, then upload the receipt image to upgrade to Premium.'),
+                        submitLabel: t('premium.submitUpgradePayment', 'Send Upgrade Request')
+                    };
+                }
+                return {
+                    displayTier: 'premium',
+                    actionTier: 'premium',
+                    title: t('premium.heroTitleDefault', 'Get Premium'),
+                    buyLabel: t('premium.buy', 'Buy Premium'),
+                    paymentTitle: t('premium.paymentTitle', 'Premium Payment'),
+                    paymentAmount: t('premium.paymentAmount', '50,000 Tomans'),
+                    paymentInstructions: t('premium.paymentInstructions', 'Send the payment to the card below, then upload the receipt image.'),
+                    submitLabel: t('premium.submitPayment', 'Send Payment Request')
+                };
+            }
+            if (modalSource === 'subscription_menu' && !actionTier && modalTier === 'premium' && currentTierRank >= 2) {
+                return {
+                    displayTier: 'premium',
+                    actionTier: '',
+                    source: modalSource || 'subscription_menu',
+                    title: t('premium.title', 'Premium'),
+                    buyLabel: t('premium.buy', 'Buy Premium'),
+                    paymentTitle: t('premium.paymentTitle', 'Premium Payment'),
+                    paymentAmount: t('premium.paymentAmount', '50,000 Tomans'),
+                    paymentInstructions: t('premium.paymentInstructions', 'Send the payment to the card below, then upload the receipt image.'),
+                    submitLabel: t('premium.submitPayment', 'Send Payment Request')
+                };
+            }
+            if (modalSource === 'profile_badge_upgrade' && modalTier === 'premium') {
+                return {
+                    displayTier: 'premium',
+                    actionTier: 'premium_upgrade',
+                    source: 'profile_badge_upgrade',
+                    title: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                    buyLabel: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                    paymentTitle: t('premium.upgradePaymentTitle', 'Premium Upgrade Payment'),
+                    paymentAmount: t('premium.upgradePaymentAmount', '15,000 Tomans'),
+                    paymentInstructions: t('premium.upgradePaymentInstructions', 'Send the payment to the card below, then upload the receipt image to upgrade to Premium.'),
+                    submitLabel: t('premium.submitUpgradePayment', 'Send Upgrade Request')
+                };
+            }
+            if (actionTier === 'premium_upgrade' && modalTier === 'premium') {
+                return {
+                    displayTier: 'premium',
+                    actionTier: 'premium_upgrade',
+                    title: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                    buyLabel: t('premium.upgradeToPremium', 'Upgrade to Premium'),
+                    paymentTitle: t('premium.upgradePaymentTitle', 'Premium Upgrade Payment'),
+                    paymentAmount: t('premium.upgradePaymentAmount', '15,000 Tomans'),
+                    paymentInstructions: t('premium.upgradePaymentInstructions', 'Send the payment to the card below, then upload the receipt image to upgrade to Premium.'),
+                    submitLabel: t('premium.submitUpgradePayment', 'Send Upgrade Request')
+                };
+            }
+            if (actionTier === 'premium_upgrade' || (currentTierRank >= 1 && !actionTier && modalTier === 'silver')) {
+                return {
+                    displayTier: 'silver',
+                    actionTier: 'premium_upgrade',
+                    title: t('premium.silverTitle', 'Silver'),
+                    buyLabel: t('premium.upgradeSubscription', 'Upgrade Subscription'),
+                    paymentTitle: t('premium.upgradePaymentTitle', 'Premium Upgrade Payment'),
+                    paymentAmount: t('premium.upgradePaymentAmount', '15,000 Tomans'),
+                    paymentInstructions: t('premium.upgradePaymentInstructions', 'Send the payment to the card below, then upload the receipt image to upgrade to Premium.'),
+                    submitLabel: t('premium.submitUpgradePayment', 'Send Upgrade Request')
+                };
+            }
+            if (actionTier === 'silver') {
+                return {
+                    displayTier: 'silver',
+                    actionTier: 'silver',
+                    title: t('premium.silverHeroTitle', 'Get Silver'),
+                    buyLabel: t('premium.buySilverNow', 'Buy Silver'),
+                    paymentTitle: t('premium.silverPaymentTitle', 'Silver Payment'),
+                    paymentAmount: t('premium.silverPaymentAmount', '35,000 Tomans'),
+                    paymentInstructions: t('premium.silverPaymentInstructions', 'Send the payment to the card below, then upload the receipt image for Silver review.'),
+                    submitLabel: t('premium.submitSilverPayment', 'Send Silver Payment Request')
+                };
+            }
+            return {
+                displayTier: 'premium',
+                actionTier: 'premium',
+                title: t('premium.heroTitleDefault', 'Get Premium'),
+                buyLabel: t('premium.buy', 'Buy Premium'),
+                paymentTitle: t('premium.paymentTitle', 'Premium Payment'),
+                paymentAmount: t('premium.paymentAmount', '50,000 Tomans'),
+                paymentInstructions: t('premium.paymentInstructions', 'Send the payment to the card below, then upload the receipt image.'),
+                submitLabel: t('premium.submitPayment', 'Send Payment Request')
+            };
+        }
+
+        function applySubscriptionModalContent() {
+            const context = resolveSubscriptionModalContext();
+            const content = getSubscriptionModalContent(context.displayTier);
+            const activeTier = getCurrentViewerMembershipTier();
+            const hasActiveSubscription = Boolean(activeTier);
+            state.subscriptionModalTier = context.displayTier;
+            state.subscriptionModalAction = context.actionTier;
+            state.subscriptionModalSource = context.source || state.subscriptionModalSource;
+            if (state.dom.premiumHeroTitle) {
+                state.dom.premiumHeroTitle.textContent = context.title;
+            }
+            for (let index = 0; index < 7; index += 1) {
+                const lineEl = state.dom[`premiumBenefitLine${index + 1}`];
+                if (!lineEl) continue;
+                const line = content.lines[index] || '';
+                lineEl.textContent = line;
+                lineEl.classList.toggle('hidden', !line);
+            }
+            if (state.dom.premiumBuyButtonLabel) {
+                state.dom.premiumBuyButtonLabel.textContent = context.buyLabel || content.buyLabel;
+            }
+            if (state.dom.premiumPaymentKicker) {
+                state.dom.premiumPaymentKicker.textContent = context.paymentTitle;
+            }
+            if (state.dom.premiumPaymentAmount) {
+                state.dom.premiumPaymentAmount.textContent = context.paymentAmount;
+            }
+            if (state.dom.premiumPaymentHelp) {
+                state.dom.premiumPaymentHelp.textContent = context.paymentInstructions;
+            }
+            if (state.dom.submitPremiumPaymentLabel) {
+                state.dom.submitPremiumPaymentLabel.textContent = context.submitLabel;
+            }
+            if (state.dom.premiumBuyButton) {
+                state.dom.premiumBuyButton.classList.toggle('hidden', !context.actionTier || Boolean(context.owned));
+            }
+            if (state.dom.premiumSilverUpsellButton) {
+                const showUpsell = !hasActiveSubscription
+                    && (state.subscriptionModalSource === 'subscription' || state.subscriptionModalSource === 'subscription_menu')
+                    && context.displayTier === 'premium'
+                    && context.actionTier === 'premium';
+                state.dom.premiumSilverUpsellButton.classList.toggle('hidden', !showUpsell);
+            }
+            if (state.dom.premiumCancelButton) {
+                state.dom.premiumCancelButton.classList.toggle('hidden', !hasActiveSubscription || Boolean(context.owned));
+            }
+            if (state.dom.premiumViewProfileButton) {
+                state.dom.premiumViewProfileButton.textContent = context.buyLabel || t('profile.viewProfile', 'View Profile');
+                state.dom.premiumViewProfileButton.classList.toggle('hidden', !context.owned);
+            }
+            applyPremiumPreviewPalette();
+        }
+
+        function animatePremiumPreview(ts = performance.now()) {
+            if (!premiumPreviewState.renderer || !premiumPreviewState.scene || !premiumPreviewState.camera || !premiumPreviewState.mesh) return;
+            if (state.dom.premiumModal?.classList.contains('hidden')) {
+                premiumPreviewState.frameHandle = 0;
+                return;
+            }
+            if (premiumPreviewState.lastRenderTs && ts - premiumPreviewState.lastRenderTs < 33) {
+                premiumPreviewState.frameHandle = requestAnimationFrame(animatePremiumPreview);
+                return;
+            }
+            premiumPreviewState.lastRenderTs = ts;
+            const tsSeconds = ts / 1000;
+            if (!premiumPreviewState.dragging) {
+                premiumPreviewState.targetX = premiumPreviewState.baseX + Math.sin(tsSeconds * 1.35) * 0.045;
+                premiumPreviewState.targetY = premiumPreviewState.baseY + Math.cos(tsSeconds * 1.1) * 0.055;
+            }
+            premiumPreviewState.currentX += (premiumPreviewState.targetX - premiumPreviewState.currentX) * 0.12;
+            premiumPreviewState.currentY += (premiumPreviewState.targetY - premiumPreviewState.currentY) * 0.12;
+            premiumPreviewState.mesh.rotation.x = premiumPreviewState.currentX;
+            premiumPreviewState.mesh.rotation.y = premiumPreviewState.currentY;
+            drawPremiumParticles(tsSeconds);
+            premiumPreviewState.renderer.render(premiumPreviewState.scene, premiumPreviewState.camera);
+            premiumPreviewState.frameHandle = requestAnimationFrame(animatePremiumPreview);
+        }
+
+        function stopPremiumPreview() {
+            if (premiumPreviewState.frameHandle) {
+                cancelAnimationFrame(premiumPreviewState.frameHandle);
+                premiumPreviewState.frameHandle = 0;
+            }
+            premiumPreviewState.dragging = false;
+            premiumPreviewState.pointerId = null;
+        }
+
+        function destroyPremiumPreview() {
+            stopPremiumPreview();
+            if (premiumPreviewState.renderer) {
+                try {
+                    premiumPreviewState.renderer.setAnimationLoop?.(null);
+                    premiumPreviewState.renderer.dispose?.();
+                } catch (error) {
+                    console.warn('Premium preview renderer cleanup failed', error);
+                }
+            }
+            if (premiumPreviewState.scene) {
+                premiumPreviewState.scene.traverse((child) => {
+                    if (!child?.isMesh) return;
+                    child.geometry?.dispose?.();
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach((material) => material?.dispose?.());
+                    } else {
+                        child.material?.dispose?.();
+                    }
+                });
+            }
+            premiumPreviewState.renderer = null;
+            premiumPreviewState.scene = null;
+            premiumPreviewState.camera = null;
+            premiumPreviewState.mesh = null;
+            premiumPreviewState.material = null;
+            premiumPreviewState.activeCanvas = null;
+            premiumPreviewState.currentX = premiumPreviewState.baseX;
+            premiumPreviewState.currentY = premiumPreviewState.baseY;
+            premiumPreviewState.targetX = premiumPreviewState.baseX;
+            premiumPreviewState.targetY = premiumPreviewState.baseY;
+            premiumPreviewState.dragging = false;
+            premiumPreviewState.pointerId = null;
+            premiumPreviewState.initialized = false;
+            premiumPreviewState.lastRenderTs = 0;
+            state.dom.premiumStarCanvas?.classList.add('hidden');
+            state.dom.premiumStarFallback?.classList.remove('hidden');
+        }
+
+        async function ensurePremiumPreview() {
+            if (premiumPreviewState.failed) {
+                premiumPreviewState.failed = false;
+            }
+            if (premiumPreviewState.initialized) {
+                state.dom.premiumStarCanvas?.classList.remove('hidden');
+                state.dom.premiumStarFallback?.classList.add('hidden');
+                premiumPreviewState.activeCanvas = premiumPreviewState.renderer?.domElement || state.dom.premiumStarCanvas;
+                applyPremiumPreviewPalette();
+                resizePremiumPreview();
+                if (!premiumPreviewState.frameHandle) animatePremiumPreview();
+                return;
+            }
+            try {
+                const THREE = await import('../../vendor/three/build/three.module.js');
+                const { OBJLoader } = await import('../../vendor/three/examples/jsm/loaders/OBJLoader.js');
+                const canvas = state.dom.premiumStarCanvas;
+                if (!canvas) return;
+                const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'low-power' });
+                const scene = new THREE.Scene();
+                const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+                camera.position.set(0, 0, 9);
+                scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+                const lightA = new THREE.DirectionalLight(0xf5d0fe, 1.8);
+                lightA.position.set(4, 5, 8);
+                scene.add(lightA);
+                const lightB = new THREE.DirectionalLight(0xffffff, 0.9);
+                lightB.position.set(-5, -2, 6);
+                scene.add(lightB);
+                const loader = new OBJLoader();
+                const obj = await new Promise((resolve, reject) => {
+                    loader.load(new URL('../../telegram_star.obj', import.meta.url).href, resolve, undefined, reject);
+                });
+                const material = new THREE.MeshPhysicalMaterial({
+                    color: 0x9f4fff,
+                    emissive: 0x5b21b6,
+                    emissiveIntensity: 0.24,
+                    metalness: 0.2,
+                    roughness: 0.22,
+                    clearcoat: 0.8,
+                    clearcoatRoughness: 0.18
+                });
+                obj.traverse((child) => {
+                    if (child.isMesh) {
+                        child.material = material;
+                        child.castShadow = false;
+                        child.receiveShadow = false;
+                    }
+                });
+                const box = new THREE.Box3().setFromObject(obj);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                obj.position.sub(center);
+                const maxSize = Math.max(size.x, size.y, size.z) || 1;
+                const scale = 4.35 / maxSize;
+                obj.scale.setScalar(scale);
+                obj.rotation.x = premiumPreviewState.baseX;
+                obj.rotation.y = premiumPreviewState.baseY;
+                scene.add(obj);
+                premiumPreviewState.initialized = true;
+                premiumPreviewState.renderer = renderer;
+                premiumPreviewState.scene = scene;
+                premiumPreviewState.camera = camera;
+                premiumPreviewState.mesh = obj;
+                premiumPreviewState.material = material;
+                premiumPreviewState.activeCanvas = renderer.domElement;
+                premiumPreviewState.currentX = premiumPreviewState.targetX = premiumPreviewState.baseX;
+                premiumPreviewState.currentY = premiumPreviewState.targetY = premiumPreviewState.baseY;
+                applyPremiumPreviewPalette();
+                resizePremiumPreview();
+                if (!premiumPreviewState.interactionBound) {
+                    canvas.addEventListener('pointerdown', (event) => {
+                        premiumPreviewState.dragging = true;
+                        premiumPreviewState.pointerId = event.pointerId;
+                        premiumPreviewState.lastX = event.clientX;
+                        premiumPreviewState.lastY = event.clientY;
+                        canvas.classList.add('is-dragging');
+                        canvas.setPointerCapture?.(event.pointerId);
+                    });
+                    canvas.addEventListener('pointermove', (event) => {
+                        if (!premiumPreviewState.dragging || premiumPreviewState.pointerId !== event.pointerId) return;
+                        const deltaX = event.clientX - premiumPreviewState.lastX;
+                        const deltaY = event.clientY - premiumPreviewState.lastY;
+                        premiumPreviewState.lastX = event.clientX;
+                        premiumPreviewState.lastY = event.clientY;
+                        premiumPreviewState.targetY += deltaX * 0.015;
+                        premiumPreviewState.targetX += deltaY * 0.01;
+                    });
+                    const endDrag = (event) => {
+                        if (event && premiumPreviewState.pointerId !== event.pointerId) return;
+                        premiumPreviewState.dragging = false;
+                        premiumPreviewState.pointerId = null;
+                        premiumPreviewState.targetX = premiumPreviewState.baseX;
+                        premiumPreviewState.targetY = premiumPreviewState.baseY;
+                        canvas.classList.remove('is-dragging');
+                    };
+                    canvas.addEventListener('pointerup', endDrag);
+                    canvas.addEventListener('pointercancel', endDrag);
+                    canvas.addEventListener('pointerleave', endDrag);
+                    window.addEventListener('resize', resizePremiumPreview);
+                    premiumPreviewState.interactionBound = true;
+                }
+                state.dom.premiumStarFallback?.classList.add('hidden');
+                canvas.classList.remove('hidden');
+                animatePremiumPreview();
+            } catch (error) {
+                console.error('Premium preview failed', error);
+                showPremiumFallbackIcon();
+            }
+        }
+
+        async function openPremiumModal(tier = '', source = '') {
+            if (!state.dom.premiumModal) return;
+            const currentTierRank = getMembershipTierRank(getCurrentViewerMembershipTier());
+            const preferredTier = String(tier || '').toLowerCase();
+            const preferredSource = String(source || '').toLowerCase();
+            const preferredTierRank = getMembershipTierRank(preferredTier === 'silver' ? 'silver' : preferredTier === 'premium' ? 'premium' : '');
+            if (premiumPreviewState.initialized || premiumPreviewState.frameHandle) {
+                destroyPremiumPreview();
+            }
+            if (preferredTier === 'premium' || preferredTier === 'silver') {
+                if (currentTierRank >= preferredTierRank) {
+                    state.subscriptionModalTier = preferredTier;
+                    state.subscriptionModalAction = '';
+                    state.subscriptionModalSource = preferredSource || 'profile_badge';
+                } else if (preferredSource === 'profile_badge' && preferredTier === 'premium' && currentTierRank >= 1) {
+                    state.subscriptionModalTier = 'premium';
+                    state.subscriptionModalAction = 'premium_upgrade';
+                    state.subscriptionModalSource = 'profile_badge_upgrade';
+                } else {
+                    state.subscriptionModalTier = preferredTier;
+                    state.subscriptionModalAction = preferredTier === 'silver' ? 'silver' : 'premium';
+                    state.subscriptionModalSource = preferredSource || (preferredTier === 'silver' ? 'silver_purchase' : 'subscription');
+                }
+            } else if (preferredTier === 'premium_theme') {
+                if (currentTierRank >= 1) {
+                    state.subscriptionModalTier = 'premium';
+                    state.subscriptionModalAction = 'premium_upgrade';
+                    state.subscriptionModalSource = 'premium_theme';
+                } else {
+                    state.subscriptionModalTier = 'premium';
+                    state.subscriptionModalAction = 'premium';
+                    state.subscriptionModalSource = 'premium_theme';
+                }
+            } else if (currentTierRank >= 2) {
+                state.subscriptionModalTier = 'premium';
+                state.subscriptionModalAction = '';
+                state.subscriptionModalSource = preferredSource || 'subscription_menu';
+            } else if (currentTierRank >= 1) {
+                state.subscriptionModalTier = 'silver';
+                state.subscriptionModalAction = 'premium_upgrade';
+                state.subscriptionModalSource = preferredSource || 'subscription';
+            } else {
+                state.subscriptionModalTier = 'premium';
+                state.subscriptionModalAction = 'premium';
+                state.subscriptionModalSource = preferredSource || 'subscription';
+            }
+            applySubscriptionModalContent();
+            ui.openModal(state.dom.premiumModal);
+            await ensurePremiumPreview();
+        }
+
+        async function openSubscriptionMenuModal() {
+            if (!state.dom.premiumModal) return;
+            const currentTierRank = getMembershipTierRank(getCurrentViewerMembershipTier());
+            if (premiumPreviewState.initialized || premiumPreviewState.frameHandle) {
+                destroyPremiumPreview();
+            }
+            state.subscriptionModalSource = 'subscription_menu';
+            if (currentTierRank >= 2) {
+                state.subscriptionModalTier = 'premium';
+                state.subscriptionModalAction = '';
+            } else if (currentTierRank >= 1) {
+                state.subscriptionModalTier = 'silver';
+                state.subscriptionModalAction = 'premium_upgrade';
+            } else {
+                state.subscriptionModalTier = 'premium';
+                state.subscriptionModalAction = 'premium';
+            }
+            applySubscriptionModalContent();
+            ui.openModal(state.dom.premiumModal);
+            await ensurePremiumPreview();
+        }
+
+        function resetPremiumPaymentPreview() {
+            state.premiumReceiptFile = null;
+            if (!state.dom.premiumReceiptInput) return;
+            state.dom.premiumReceiptInput.value = '';
+            if (state.dom.premiumReceiptPreview) {
+                state.dom.premiumReceiptPreview.innerHTML = `<div class="premium-payment-preview-empty">${escapeHtml(t('premium.uploadReceipt', 'Upload receipt image'))}</div>`;
+            }
+        }
+
+        function updatePremiumPaymentPreview(file) {
+            state.premiumReceiptFile = file || null;
+            if (!state.dom.premiumReceiptPreview) return;
+            if (!file) {
+                resetPremiumPaymentPreview();
+                return;
+            }
+            const objectUrl = URL.createObjectURL(file);
+            state.dom.premiumReceiptPreview.innerHTML = `<img src="${escapeAttr(objectUrl)}" alt="${escapeAttr(file.name || 'receipt')}">`;
+            const image = state.dom.premiumReceiptPreview.querySelector('img');
+            image?.addEventListener('load', () => URL.revokeObjectURL(objectUrl), { once: true });
+        }
+
+        function openPremiumPaymentModal() {
+            if (!state.dom.premiumPaymentModal) return;
+            if (!state.subscriptionModalAction) return;
+            destroyPremiumPreview();
+            ui.closeModal(state.dom.premiumModal);
+            state.dom.premiumPaymentCardNumber.textContent = '6221061217055682';
+            state.dom.premiumPaymentCardholderName.textContent = 'زینب رضایی';
+            resetPremiumPaymentPreview();
+            applySubscriptionModalContent();
+            ui.openModal(state.dom.premiumPaymentModal);
+        }
+
+        async function cancelPremiumSubscription() {
+            try {
+                await authenticatedFetch('/subscription/cancel', {
+                    method: 'POST',
+                });
+                destroyPremiumPreview();
+                ui.closeModal(state.dom.premiumModal);
+                showSuccessModal(
+                    t('premium.title', 'Premium'),
+                    t('premium.cancelledBody', 'Your subscription was cancelled.')
+                );
+            } catch (error) {
+                showErrorModal(
+                    t('premium.title', 'Premium'),
+                    error.message || t('premium.cancelFailed', 'Could not cancel the subscription.')
+                );
+            }
+        }
+
+        function toggleScreenShareQuality() {
+            const tier = String(state.currentUser?.membershipTier || '').toLowerCase();
+            if (tier !== 'premium') {
+                showErrorModal(t('premium.title', 'Premium'), t('voice.screenShareQualityPremiumOnly', '720p screen share is only available for Premium users.'));
+                return;
+            }
+            state.preferredScreenShareQuality = state.preferredScreenShareQuality === '720p' ? '480p' : '720p';
+            if (state.currentChat?.chatId) {
+                ui.renderVoiceUI(state.currentChat.chatId);
+            }
+        }
+
+        async function submitPremiumPaymentRequest() {
+            if (!state.premiumReceiptFile) {
+                showErrorModal(t('premium.paymentTitle', 'Premium Payment'), t('premium.receiptRequired', 'Upload the receipt image first.'));
+                return;
+            }
+            if (!state.subscriptionModalAction) {
+                showErrorModal(t('premium.title', 'Premium'), t('premium.paymentFailed', 'Could not send the payment request.'));
+                return;
+            }
+            const formData = new FormData();
+            formData.append('tier', state.subscriptionModalAction === 'premium_upgrade' ? 'premium_upgrade' : state.subscriptionModalAction === 'silver' ? 'silver' : 'premium');
+            formData.append('receipt', state.premiumReceiptFile);
+            try {
+                state.dom.submitPremiumPaymentButton?.setAttribute('disabled', 'disabled');
+                await authenticatedFetch('/payment/request', {
+                    method: 'POST',
+                    body: formData,
+                });
+                ui.closeModal(state.dom.premiumPaymentModal);
+                showSuccessModal(t('premium.paymentSentTitle', 'Payment Request Sent'), t('premium.paymentSentBody', 'Your receipt was sent for review.'));
+            } catch (error) {
+                showErrorModal(t('premium.paymentTitle', 'Premium Payment'), error.message || t('premium.paymentFailed', 'Could not send the payment request.'));
+            } finally {
+                state.dom.submitPremiumPaymentButton?.removeAttribute('disabled');
+            }
+        }
+
         async function init() {
             ui.initDOM();
             await loadLanguage(resolvePreferredLanguage(), false);
+            await applyEmojiMode(getStorage().loadEmojiMode(), false);
             ui.updateUiForAuthState(false);
             syncVoiceChatModule();
             setupEventListeners();
             state.mutedUserIds = new Set(getStorage().loadMutedUsers());
+            state.mutedChatIds = new Set(getStorage().loadMutedChats());
             const savedTheme = getStorage().loadTheme();
             const savedThemePreset = getStorage().loadThemePreset();
             if (savedThemePreset && THEME_PRESETS[savedThemePreset]) {
@@ -9736,7 +12882,10 @@ async function handleCreateChannel(e) {
                 state.sessionExpiresAt = Number(session.expiresAt || 0);
                 connect({ type: 'reconnect', userId: session.userId, token: session.token });
             } else {
-                ui.showAuthScreen();
+                state.onboardingIndex = 0;
+                renderOnboarding();
+                if (getStorage().loadOnboardingSeen()) ui.showAuthScreen();
+                else ui.showOnboardingScreen();
             }
         }
         init();

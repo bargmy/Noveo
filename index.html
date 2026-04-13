@@ -9,7 +9,7 @@
     <script src="static/js/tailwind.min.js"></script>
     <link rel="stylesheet" href="static/js/all.min.css" />
     <link rel="stylesheet" href="code-highlight.css" />
-    <link rel="stylesheet" href="static/css/app-core.css?v=20260406_105" />
+    <link rel="stylesheet" href="static/css/app-core.css?v=20260412_1" />
     <link rel="stylesheet" href="static/css/app-dynamic.css?v=20260404_62" id="dynamic-theme-style-link" />
 </head>
 <body class="app-surface h-screen w-screen">
@@ -19,6 +19,15 @@
                 <div class="min-w-0 flex-1">
                     <div id="errorToastTitle" class="text-sm font-bold">Error</div>
                     <div id="errorToastMessage" class="mt-1 text-sm opacity-90">An unexpected error occurred.</div>
+                </div>
+            </div>
+            <div id="emojiDownloadToast" class="hidden fixed top-3 left-1/2 z-[94] w-[min(92vw,38rem)] -translate-x-1/2 rounded-2xl border px-4 py-3 shadow-xl backdrop-blur bg-white/95 border-gray-200">
+                <div class="min-w-0">
+                    <div id="emojiDownloadTitle" class="text-sm font-bold" data-i18n="settings.emojiDownloadTitle">Downloading iOS emojis</div>
+                    <div id="emojiDownloadMessage" class="mt-1 text-sm text-gray-600" data-i18n="settings.emojiDownloadPreparing">Preparing emoji cache...</div>
+                    <div id="emojiDownloadProgressContainer" class="mt-3 w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                        <div id="emojiDownloadProgressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
                 </div>
             </div>
             <!-- Loading Overlay -->
@@ -37,7 +46,7 @@
                 <div class="w-full max-w-sm px-8">
                     <div id="loginForm">
                         <h1 class="text-3xl font-bold mb-2 text-center" data-i18n="auth.welcomeBack">Welcome Back!</h1>
-                        <p class="text-gray-500 mb-6 text-center" data-i18n="auth.loginSubtitle">Please log in to continue.</p>
+                        <p id="authLoginSubtitle" class="text-gray-500 mb-6 text-center" data-i18n="auth.loginSubtitle">Please log in to continue.</p>
                         <input id="loginUsernameInput" type="text" placeholder="Username" data-i18n-placeholder="auth.username" class="w-full px-4 py-2 mb-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <input id="loginPasswordInput" type="password" placeholder="Password" data-i18n-placeholder="auth.password" class="w-full px-4 py-2 mb-4 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <button id="loginButton" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg interactive-pop" data-i18n="auth.login">Login</button>
@@ -56,6 +65,23 @@
                         </p>
                     </div>
                     <p id="authError" class="text-red-500 text-sm text-center mt-4"></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="onboardingScreen" class="hidden fixed inset-0 w-full h-screen bg-white flex-col justify-center items-center modal-content px-6">
+            <div class="w-full max-w-md">
+                <div class="text-center mb-8">
+                    <h1 class="text-4xl font-black tracking-tight app-text-primary">Noveo</h1>
+                </div>
+                <div id="onboardingCard" class="rounded-[2rem] border app-border bg-white shadow-sm px-6 py-8 touch-pan-y select-none">
+                    <div id="onboardingIcon" class="mx-auto flex h-28 w-28 items-center justify-center rounded-[2rem] bg-blue-50 text-blue-600"></div>
+                    <p id="onboardingDescription" class="mt-6 min-h-[5rem] text-center text-base leading-7 app-text-primary"></p>
+                    <div id="onboardingDots" class="mt-6 text-center text-xl tracking-[0.35em] app-text-muted"></div>
+                    <div class="mt-8 flex items-center justify-between gap-3">
+                        <button id="onboardingSkipButton" type="button" class="px-5 py-2.5 rounded-xl btn-neutral interactive-pop" data-i18n="onboarding.skip">Skip</button>
+                        <button id="onboardingNextButton" type="button" class="px-5 py-2.5 rounded-xl btn-accent interactive-pop" data-i18n="onboarding.next">Next</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -126,6 +152,9 @@
                         <button id="leaveGroupButton" class="hidden app-icon-button-danger text-xl p-3 interactive-pop" title="Leave Group/Channel" data-i18n-title="chat.leaveChat">
                             <i class="fas fa-door-open"></i>
                         </button>
+                        <button id="chatSearchButton" class="hidden app-icon-button text-xl p-3 interactive-pop" title="Search Messages" data-i18n-title="menu.searchMessages">
+                            <i class="fas fa-search"></i>
+                        </button>
                         <!-- Voice Chat Button -->
                         <button id="e2eeToggleButton" class="hidden ml-auto app-icon-button text-xl p-3 interactive-pop" title="Start E2EE Chat" data-i18n-title="chat.startE2ee">
                             <i class="fas fa-lock"></i>
@@ -146,6 +175,7 @@
                                     <button id="toggleScreenShareButton" class="voice-call-control-button interactive-pop" type="button" title="Share Screen">
                                         <i class="fas fa-display"></i>
                                     </button>
+                                    <button id="toggleScreenShareQualityButton" class="voice-call-control-button interactive-pop hidden" type="button" title="Screen share quality">480p</button>
                                     <button id="toggleMuteButton" class="voice-call-control-button interactive-pop" type="button" title="Mute microphone">
                                         <i class="fas fa-microphone-slash"></i>
                                     </button>
@@ -259,6 +289,24 @@
 								</div>
 							</div>
 						</div>
+                        <div id="attachMenuPanel" class="hidden absolute bottom-20 left-4 app-panel rounded-2xl shadow-xl w-80 z-50 overflow-hidden">
+                            <div class="p-3 border-b app-border flex items-center justify-between app-panel-muted">
+                                <h3 class="font-bold text-gray-800" data-i18n="attach.title">Attach</h3>
+                                <button id="closeAttachMenuButton" class="text-gray-500 hover:text-gray-700" title="Close" data-i18n-title="common.close">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <div class="p-3 grid grid-cols-2 gap-3">
+                                <button id="attachMenuFileButton" type="button" class="app-list-row app-list-row-hover rounded-2xl p-4 flex flex-col items-center justify-center gap-3 interactive-pop text-center">
+                                    <span class="w-12 h-12 rounded-2xl bg-blue-100 text-blue-600 flex items-center justify-center text-xl"><i class="fas fa-file-upload"></i></span>
+                                    <span class="font-semibold app-text-primary" data-i18n="attach.file">File</span>
+                                </button>
+                                <button id="attachMenuPollButton" type="button" class="app-list-row app-list-row-hover rounded-2xl p-4 flex flex-col items-center justify-center gap-3 interactive-pop text-center">
+                                    <span class="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center text-xl"><i class="fas fa-square-poll-vertical"></i></span>
+                                    <span class="font-semibold app-text-primary" data-i18n="attach.poll">Poll</span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -352,6 +400,7 @@
                 </div>
                 <!-- Menu: 3 options -->
                 <div id="settingsMenuView" class="p-6 space-y-2">
+                    <button id="settingsPremiumOption" class="app-list-row app-list-row-hover w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 interactive-pop"><i class="fas fa-star text-amber-400 w-6 text-center"></i><span data-i18n="settings.subscription">Subscription</span></button>
                     <button id="settingsProfileOption" class="app-list-row app-list-row-hover w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 interactive-pop"><i class="fas fa-user app-text-muted w-6 text-center"></i><span data-i18n="settings.profile">Profile</span></button>
                     <button id="settingsAccountOption" class="app-list-row app-list-row-hover w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 interactive-pop"><i class="fas fa-key app-text-muted w-6 text-center"></i><span data-i18n="settings.account">Account</span></button>
                     <button id="settingsPreferencesOption" class="app-list-row app-list-row-hover w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 interactive-pop"><i class="fas fa-paint-brush app-text-muted w-6 text-center"></i><span data-i18n="settings.preferences">Preferences</span></button>
@@ -360,9 +409,9 @@
                 <!-- Profile section -->
                 <div id="settingsProfileSection" class="hidden p-4 md:p-6">
                     <input type="file" id="avatarInput" class="hidden" accept="image/*">
-                    <div class="profile-sheet profile-sheet-settings">
+                    <div id="settingsProfileSheet" class="profile-sheet profile-sheet-settings">
                         <button id="settingsProfileEditButton" class="profile-sheet-edit-button interactive-pop" title="Edit Profile" data-i18n-title="settings.editProfile"><i class="fas fa-pen"></i></button>
-                        <div class="profile-sheet-header">
+                        <div id="settingsProfileHeader" class="profile-sheet-header">
                             <div id="settingsAvatar" class="profile-sheet-avatar avatar-circle cursor-pointer" title="Change Avatar" data-i18n-title="profile.changeAvatar"></div>
                             <div class="min-w-0 flex-1">
                                 <h3 id="settingsUsername" class="profile-sheet-name flex items-center"></h3>
@@ -386,20 +435,73 @@
                                     </div>
                                 </div>
                                 <div id="settingsProfileEditMode" class="hidden space-y-4">
-                                    <div class="profile-sheet-form-field">
-                                        <label for="editUsernameInput" class="profile-sheet-form-label" data-i18n="profile.displayName">Display Name</label>
-                                        <input id="editUsernameInput" type="text" class="profile-sheet-input">
-                                    </div>
-                                    <div class="profile-sheet-form-field">
-                                        <label for="editHandleInput" class="profile-sheet-form-label">Handle</label>
-                                        <input id="editHandleInput" type="text" class="profile-sheet-input" placeholder="@handle">
-                                    </div>
-                                    <div class="profile-sheet-form-field">
-                                        <div class="flex items-center justify-between">
-                                            <label for="editBioInput" class="profile-sheet-form-label" data-i18n="profile.bio">Bio</label>
-                                            <span id="editBioCounter" class="text-xs text-gray-400">0 / 280</span>
+                                    <div class="profile-sheet-section">
+                                        <div class="profile-sheet-section-title" data-i18n="profile.displayName">Display Name</div>
+                                        <div class="space-y-4">
+                                            <div class="profile-sheet-form-field profile-font-field">
+                                                <label for="editUsernameInput" class="profile-sheet-form-label" data-i18n="profile.displayName">Display Name</label>
+                                                <select id="editUsernameFontSelect" class="profile-sheet-font-select" aria-label="Nickname font">
+                                                    <option value="" data-i18n="profile.fontDefault">Default font</option>
+                                                    <option value="8514oem">OEM</option>
+                                                    <option value="bradhitc">Bradley</option>
+                                                    <option value="coure">Courier</option>
+                                                    <option value="freescpt">Script</option>
+                                                    <option value="f_majik">مجیک</option>
+                                                    <option value="impact">Impact</option>
+                                                    <option value="npidivani">Divani</option>
+                                                </select>
+                                                <input id="editUsernameInput" type="text" class="profile-sheet-input">
+                                            </div>
+                                            <div class="profile-sheet-form-field">
+                                                <label for="editHandleInput" class="profile-sheet-form-label">Handle</label>
+                                                <input id="editHandleInput" type="text" class="profile-sheet-input" placeholder="@handle">
+                                            </div>
                                         </div>
-                                        <textarea id="editBioInput" rows="5" maxlength="280" placeholder="Tell people a bit about yourself." data-i18n-placeholder="profile.bioPlaceholder" class="profile-sheet-textarea custom-scrollbar"></textarea>
+                                    </div>
+                                    <div class="profile-sheet-section">
+                                        <div class="profile-sheet-section-title" data-i18n="profile.skinTitle">Profile Skin</div>
+                                        <div class="space-y-4">
+                                            <div class="profile-sheet-form-field">
+                                                <label for="profileSkinModeSelect" class="profile-sheet-form-label" data-i18n="profile.skinTitle">Profile Skin</label>
+                                                <select id="profileSkinModeSelect" class="profile-sheet-input">
+                                                    <option value="" data-i18n="profile.skinDefault">Default</option>
+                                                    <option value="solid" data-i18n="profile.skinSolid">Static Color</option>
+                                                    <option value="gradient" data-i18n="profile.skinGradient">Gradient</option>
+                                                </select>
+                                                <p class="text-xs text-gray-500 mt-2" data-i18n="profile.skinHint">Premium users can style their profile header.</p>
+                                            </div>
+                                            <div id="profileSkinGradientStopsWrap" class="profile-sheet-form-field hidden">
+                                                <label for="profileSkinGradientStopsSelect" class="profile-sheet-form-label" data-i18n="profile.gradientColors">Gradient Colors</label>
+                                                <select id="profileSkinGradientStopsSelect" class="profile-sheet-input">
+                                                    <option value="2" data-i18n="profile.gradientColorsTwo">2 Colors</option>
+                                                    <option value="3" data-i18n="profile.gradientColorsThree">3 Colors</option>
+                                                </select>
+                                            </div>
+                                            <div id="profileSkinColorRow" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                                <div class="profile-sheet-form-field">
+                                                    <label for="profileSkinColorPrimary" class="profile-sheet-form-label" data-i18n="profile.skinPrimary">Primary Color</label>
+                                                    <input id="profileSkinColorPrimary" type="color" class="profile-sheet-input h-12 p-2">
+                                                </div>
+                                                <div id="profileSkinColorSecondaryWrap" class="profile-sheet-form-field">
+                                                    <label for="profileSkinColorSecondary" class="profile-sheet-form-label" data-i18n="profile.skinSecondary">Secondary Color</label>
+                                                    <input id="profileSkinColorSecondary" type="color" class="profile-sheet-input h-12 p-2">
+                                                </div>
+                                                <div id="profileSkinColorTertiaryWrap" class="profile-sheet-form-field hidden">
+                                                    <label for="profileSkinColorTertiary" class="profile-sheet-form-label" data-i18n="profile.skinTertiary">Third Color</label>
+                                                    <input id="profileSkinColorTertiary" type="color" class="profile-sheet-input h-12 p-2">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="profile-sheet-section">
+                                        <div class="profile-sheet-section-title" data-i18n="profile.bio">Bio</div>
+                                        <div class="profile-sheet-form-field">
+                                            <div class="flex items-center justify-between">
+                                                <label for="editBioInput" class="profile-sheet-form-label" data-i18n="profile.bio">Bio</label>
+                                                <span id="editBioCounter" class="text-xs text-gray-400">0 / 280</span>
+                                            </div>
+                                            <textarea id="editBioInput" rows="5" maxlength="280" placeholder="Tell people a bit about yourself." data-i18n-placeholder="profile.bioPlaceholder" class="profile-sheet-textarea custom-scrollbar"></textarea>
+                                        </div>
                                     </div>
                                     <div class="profile-sheet-edit-actions">
                                         <button id="settingsProfileCancelEdit" type="button" class="profile-sheet-secondary-button interactive-pop" data-i18n="common.cancel">Cancel</button>
@@ -433,7 +535,7 @@
                     <button id="logoutButton" class="app-list-row app-list-row-hover w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 interactive-pop mt-2"><i class="fas fa-sign-out-alt app-text-muted w-5"></i><span data-i18n="auth.logout">Logout</span></button>
                 </div>
                 <!-- Preferences section -->
-                <div id="settingsPreferencesSection" class="hidden p-6">
+                <div id="settingsPreferencesSection" class="hidden p-6 max-h-[26rem] overflow-y-auto custom-scrollbar">
                     <h5 class="font-semibold text-gray-600 mb-3" data-i18n="settings.privacySettings">Privacy Settings</h5>
                     <label class="app-list-row app-list-row-hover flex items-center gap-3 p-3 rounded-lg cursor-pointer mb-4 transition">
                         <input id="blockGroupInvitesCheckbox" type="checkbox" class="h-4 w-4 rounded cursor-pointer">
@@ -455,6 +557,20 @@
                                 <option value="fa">فارسی</option>
                                 <option value="ru">Русский</option>
                                 <option value="zh">中文</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="mb-4">
+                        <h5 class="font-semibold text-gray-600 mb-3" data-i18n="settings.emojis">Emojis</h5>
+                        <label class="app-list-row app-list-row-hover flex items-center gap-3 p-3 rounded-lg transition">
+                            <i class="fas fa-face-smile app-text-muted w-5"></i>
+                            <div class="flex-1 min-w-0">
+                                <div class="font-medium" data-i18n="settings.emojiStyle">Emoji Style</div>
+                                <div class="text-xs text-gray-500" data-i18n="settings.emojiStyleDesc">Choose how emojis are rendered in chats.</div>
+                            </div>
+                            <select id="settingsEmojiSelect" class="rounded-lg border px-3 py-2 text-sm bg-white">
+                                <option value="default" data-i18n="settings.emojiDefault">Default</option>
+                                <option value="ios" data-i18n="settings.emojiIos">iOS</option>
                             </select>
                         </label>
                     </div>
@@ -588,6 +704,56 @@
                             <div class="theme-preset-title">OLED Dark</div>
                             <div class="theme-preset-description">Pure black high-contrast dark theme</div>
                         </button>
+                        <button type="button" class="theme-preset-card interactive-pop" data-theme-preset="sunset-shimmer" data-theme-tier="silver">
+                            <span class="theme-preset-check"><i class="fas fa-check"></i></span>
+                            <div class="theme-preset-preview theme-preset-preview-sunset-shimmer">
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                            </div>
+                            <div class="theme-preset-title">Sunset Shimmer</div>
+                            <div class="theme-preset-description">Silver dark orange sky theme</div>
+                        </button>
+                        <button type="button" class="theme-preset-card interactive-pop" data-theme-preset="cherry-red" data-theme-tier="silver">
+                            <span class="theme-preset-check"><i class="fas fa-check"></i></span>
+                            <div class="theme-preset-preview" style="background:linear-gradient(180deg,#3f0d18,#be123c 58%,#fb7185 100%);">
+                                <span class="theme-preset-swatch" style="background:#2a0c14"></span>
+                                <span class="theme-preset-swatch" style="background:#6e1d31"></span>
+                                <span class="theme-preset-swatch" style="background:#fb7185"></span>
+                            </div>
+                            <div class="theme-preset-title">Cherry Red</div>
+                            <div class="theme-preset-description">Silver cherry red corrected theme</div>
+                        </button>
+                        <button type="button" class="theme-preset-card interactive-pop" data-theme-preset="snowy-daydream" data-theme-tier="premium">
+                            <span class="theme-preset-check"><i class="fas fa-check"></i></span>
+                            <div class="theme-preset-preview theme-preset-preview-snowy-daydream">
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                            </div>
+                            <div class="theme-preset-title">Snowy Daydream</div>
+                            <div class="theme-preset-description">Premium icy blue winter theme</div>
+                        </button>
+                        <button type="button" class="theme-preset-card interactive-pop" data-theme-preset="rainbow-ragebait" data-theme-tier="premium">
+                            <span class="theme-preset-check"><i class="fas fa-check"></i></span>
+                            <div class="theme-preset-preview theme-preset-preview-rainbow-ragebait">
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                            </div>
+                            <div class="theme-preset-title">Rainbow Ragebait</div>
+                            <div class="theme-preset-description">Premium full-spectrum animated theme</div>
+                        </button>
+                        <button type="button" class="theme-preset-card interactive-pop" data-theme-preset="sanoki-meoa" data-theme-tier="premium">
+                            <span class="theme-preset-check"><i class="fas fa-check"></i></span>
+                            <div class="theme-preset-preview theme-preset-preview-sanoki-meoa">
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                                <span class="theme-preset-swatch"></span>
+                            </div>
+                            <div class="theme-preset-title">Sanoki Meoa</div>
+                            <div class="theme-preset-description">Premium violet starfield theme</div>
+                        </button>
                     </div>
                 </div>
                 <div class="p-4 border-t bg-gray-50 flex justify-end">
@@ -595,6 +761,97 @@
                         <i class="fas fa-palette text-gray-500"></i>
                         <span data-i18n="settings.resetTheme">Reset Theme</span>
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="premiumModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[63] p-4">
+            <div class="premium-modal modal-content relative" data-stop-propagation="true">
+                <button id="closePremiumModalButton" class="gift-detail-close" title="Close" data-i18n-title="common.close">&times;</button>
+                <div class="premium-modal-top">
+                    <div class="premium-modal-glow"></div>
+                    <canvas id="premiumParticlesCanvas" class="premium-particles-canvas" aria-hidden="true"></canvas>
+                    <div class="premium-star-stage">
+                        <canvas id="premiumStarCanvas" class="premium-star-canvas" aria-hidden="true"></canvas>
+                        <div id="premiumStarFallback" class="premium-star-fallback hidden"><i class="fas fa-star"></i></div>
+                    </div>
+                </div>
+                <div class="premium-modal-body custom-scrollbar">
+                    <div id="premiumHeroTitle" class="premium-hero-title" data-i18n="premium.heroTitleDefault">Get Premium</div>
+                    <div class="premium-copy-list">
+                        <p id="premiumBenefitLine1" class="premium-copy-line" data-i18n="premium.benefitQuality">Stream with much better Quality!</p>
+                        <p id="premiumBenefitLine2" class="premium-copy-line" data-i18n="premium.benefitCapacity">Create up to 10 Groups/Channels</p>
+                        <p id="premiumBenefitLine3" class="premium-copy-line" data-i18n="premium.benefitOutsideIran">Talk with People outside Iran!</p>
+                        <p id="premiumBenefitLine4" class="premium-copy-line" data-i18n="premium.benefitFiles">Upload files up to 100mb!</p>
+                        <p id="premiumBenefitLine5" class="premium-copy-line" data-i18n="premium.benefitFonts">Have custom fonts on your Name!</p>
+                        <p id="premiumBenefitLine6" class="premium-copy-line" data-i18n="premium.benefitColors">Color everything on your Profile!</p>
+                        <p id="premiumBenefitLine7" class="premium-copy-line" data-i18n="premium.benefitStars">Get 100 Stars for FREE!</p>
+                    </div>
+                    <button id="premiumBuyButton" class="premium-buy-button interactive-pop" type="button">
+                        <span class="premium-buy-sparkle" aria-hidden="true"></span>
+                        <span id="premiumBuyButtonLabel" data-i18n="premium.buy">Buy Premium</span>
+                    </button>
+                    <button id="premiumSilverUpsellButton" class="premium-silver-button interactive-pop" type="button" data-i18n="premium.buySilver">Cant afford it? buy Silver subscription!</button>
+                    <button id="premiumCancelButton" class="premium-silver-button interactive-pop hidden" type="button" data-i18n="premium.cancelSubscription">Cancel subscription</button>
+                    <button id="premiumViewProfileButton" class="premium-silver-button interactive-pop hidden" type="button" data-i18n="profile.viewProfile">View Profile</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="premiumPaymentModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[64] p-4">
+            <div class="premium-payment-modal modal-content relative" data-stop-propagation="true">
+                <button id="closePremiumPaymentModalButton" class="gift-detail-close" title="Close" data-i18n-title="common.close">&times;</button>
+                <div class="premium-payment-grid">
+                    <div class="premium-payment-summary">
+                        <div id="premiumPaymentKicker" class="premium-payment-kicker" data-i18n="premium.paymentTitle">Premium Payment</div>
+                        <div id="premiumPaymentAmount" class="premium-payment-amount" data-i18n="premium.paymentAmount">50,000 Tomans</div>
+                        <div id="premiumPaymentHelp" class="premium-payment-help" data-i18n="premium.paymentInstructions">Send the payment to the card below, then upload the receipt image.</div>
+                        <div class="premium-payment-card">
+                            <div class="premium-payment-card-label" data-i18n="premium.cardNumberLabel">Card Number</div>
+                            <div id="premiumPaymentCardNumber" class="premium-payment-card-value">6221061217055682</div>
+                        </div>
+                        <div class="premium-payment-card">
+                            <div class="premium-payment-card-label" data-i18n="premium.cardholderLabel">Cardholder</div>
+                            <div id="premiumPaymentCardholderName" class="premium-payment-card-value">زینب رضایی</div>
+                        </div>
+                    </div>
+                    <div class="premium-payment-form-wrap">
+                        <label class="premium-payment-upload" for="premiumReceiptInput">
+                            <input id="premiumReceiptInput" type="file" accept="image/*" class="hidden">
+                            <div id="premiumReceiptPreview" class="premium-payment-preview">
+                                <div class="premium-payment-preview-empty" data-i18n="premium.uploadReceipt">Upload receipt image</div>
+                            </div>
+                        </label>
+                        <button id="submitPremiumPaymentButton" class="premium-buy-button interactive-pop" type="button">
+                            <span class="premium-buy-sparkle" aria-hidden="true"></span>
+                            <span id="submitPremiumPaymentLabel" data-i18n="premium.submitPayment">Send Payment Request</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="premiumStarPickerModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[65] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl modal-content theme-modal-shell" data-stop-propagation="true">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-bold" data-i18n="profile.premiumStarPickerTitle">Premium Star Icon</h3>
+                        <p class="text-sm text-gray-500" data-i18n="profile.premiumStarPickerSubtitle">Choose a sticker or a template for your premium badge.</p>
+                    </div>
+                    <button id="closePremiumStarPickerButton" class="text-xl p-2" title="Close" data-i18n-title="common.close">&times;</button>
+                </div>
+                <div class="p-4 border-b flex flex-wrap gap-2">
+                    <button id="premiumStarSourceStickers" type="button" class="profile-sheet-secondary-button interactive-pop" data-i18n="profile.pickFromStickers">Pick from Stickers</button>
+                    <button id="premiumStarSourceTemplates" type="button" class="profile-sheet-secondary-button interactive-pop" data-i18n="profile.pickFromTemplates">Pick from Templates</button>
+                    <button id="premiumStarResetButton" type="button" class="profile-sheet-secondary-button interactive-pop ml-auto" data-i18n="profile.useDefaultPremiumStar">Use Default Star</button>
+                </div>
+                <div class="p-4">
+                    <div id="premiumStarPickerStatus" class="text-sm text-gray-500 mb-3" data-i18n="loading.updating">Updating...</div>
+                    <div id="premiumStarPickerGrid" class="profile-sheet-gifts-grid custom-scrollbar max-h-[24rem] overflow-y-auto"></div>
+                </div>
+                <div class="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                    <button id="cancelPremiumStarPickerButton" type="button" class="profile-sheet-secondary-button interactive-pop" data-i18n="common.cancel">Cancel</button>
+                    <button id="savePremiumStarPickerButton" type="button" class="profile-sheet-primary-button interactive-pop" data-i18n="common.save">Save</button>
                 </div>
             </div>
         </div>
@@ -731,7 +988,7 @@
                 <button id="userInfoMuteButton" class="absolute top-3 left-3 z-10 h-10 w-10 rounded-full bg-gray-100 text-lg text-gray-500 hover:text-gray-700 interactive-pop" title="Mute notifications">
                     <i class="fas fa-volume-xmark"></i>
                 </button>
-                <div class="p-5 md:p-6">
+                <div id="userInfoProfileSheet" class="p-5 md:p-6 profile-sheet profile-sheet-settings">
                     <div class="profile-sheet-header pr-10">
                         <div id="userInfoAvatar" class="profile-sheet-avatar avatar-circle shadow-sm"></div>
                         <div class="min-w-0 flex-1">
@@ -956,7 +1213,7 @@
                 </div>
             </div>
         </div>
-        <div id="editHandleModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-50 p-4">
+        <div id="editHandleModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[70] p-4">
             <div class="bg-white rounded-lg shadow-xl w-full max-w-md modal-content">
                 <div class="p-4 border-b flex justify-between items-center">
                     <h2 id="editHandleTitle" class="text-xl font-bold" data-i18n="chat.editHandle">Edit Handle</h2>
@@ -993,6 +1250,171 @@
             </div>
         </div>
 
+        <div id="pollComposerModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[70] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md modal-content overflow-hidden">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-bold app-text-primary" data-i18n="polls.title">New Poll</h3>
+                        <p class="text-sm app-text-muted" data-i18n="polls.subtitle">Set up the question and poll rules.</p>
+                    </div>
+                    <button id="closePollComposerButton" class="text-gray-500 hover:text-gray-700 text-xl leading-none" title="Close" data-i18n-title="common.close">&times;</button>
+                </div>
+                <div class="p-4 space-y-4 max-h-[78vh] overflow-y-auto custom-scrollbar">
+                    <div class="space-y-2">
+                        <label for="pollQuestionInput" class="text-sm font-semibold app-text-primary" data-i18n="polls.question">Question</label>
+                        <input id="pollQuestionInput" type="text" class="w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ask a question" data-i18n-placeholder="polls.questionPlaceholder">
+                    </div>
+                    <div class="space-y-2">
+                        <label class="text-sm font-semibold app-text-primary" data-i18n="polls.options">Options</label>
+                        <div id="pollOptionsContainer" class="space-y-2">
+                            <input id="pollOptionInput1" type="text" class="poll-option-input w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Option 1" data-i18n-placeholder="polls.optionPlaceholder">
+                            <input id="pollOptionInput2" type="text" class="poll-option-input w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Option 2" data-i18n-placeholder="polls.optionPlaceholder">
+                        </div>
+                    </div>
+                    <button id="addPollOptionButton" type="button" class="w-full rounded-xl btn-neutral py-2.5 interactive-pop font-semibold" data-i18n="polls.addOption">Add Option</button>
+                    <div class="rounded-2xl border p-4 space-y-4 bg-gray-50/80">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="font-semibold app-text-primary" data-i18n="polls.anonymous">Anonymous Mode</div>
+                                <div class="text-sm app-text-muted" data-i18n="polls.anonymousDesc">Hide who voted.</div>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input id="pollAnonymousToggle" type="checkbox" class="sr-only peer">
+                                <span class="w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-blue-500 transition"></span>
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-5"></span>
+                            </label>
+                        </div>
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="font-semibold app-text-primary" data-i18n="polls.examMode">Exam Mode</div>
+                                <div class="text-sm app-text-muted" data-i18n="polls.examModeDesc">Only the poll author can review answers.</div>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input id="pollExamModeToggle" type="checkbox" class="sr-only peer">
+                                <span class="w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-emerald-500 transition"></span>
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-5"></span>
+                            </label>
+                        </div>
+                        <div id="pollCorrectOptionRow" class="hidden space-y-2">
+                            <label for="pollCorrectOptionSelect" class="text-sm font-semibold app-text-primary" data-i18n="polls.correctAnswer">Correct Answer</label>
+                            <select id="pollCorrectOptionSelect" class="w-full rounded-xl border px-4 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"></select>
+                        </div>
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="font-semibold app-text-primary" data-i18n="polls.resultsAfterVote">Hide Results Until Vote</div>
+                                <div class="text-sm app-text-muted" data-i18n="polls.resultsAfterVoteDesc">People need to vote before seeing totals.</div>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input id="pollResultsAfterVoteToggle" type="checkbox" class="sr-only peer">
+                                <span class="w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-violet-500 transition"></span>
+                                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-5"></span>
+                            </label>
+                        </div>
+                        <div class="space-y-2">
+                            <label for="pollTimerSelect" class="text-sm font-semibold app-text-primary" data-i18n="polls.timer">Timer</label>
+                            <select id="pollTimerSelect" class="w-full rounded-xl border px-4 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="0" data-i18n="polls.noTimer">No timer</option>
+                                <option value="300" data-i18n="polls.timer5m">5 minutes</option>
+                                <option value="1800" data-i18n="polls.timer30m">30 minutes</option>
+                                <option value="3600" data-i18n="polls.timer1h">1 hour</option>
+                                <option value="86400" data-i18n="polls.timer1d">1 day</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button id="sendPollButton" type="button" class="w-full rounded-xl btn-accent py-3 interactive-pop font-semibold" data-i18n="polls.send">Send Poll</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="pollVotesModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[70] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md modal-content overflow-hidden">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <h3 id="pollVotesTitle" class="text-lg font-bold app-text-primary" data-i18n="polls.votes">Votes</h3>
+                    <button id="closePollVotesButton" class="text-gray-500 hover:text-gray-700 text-xl leading-none" title="Close" data-i18n-title="common.close">&times;</button>
+                </div>
+                <div id="pollVotesContent" class="p-4 max-h-[70vh] overflow-y-auto custom-scrollbar space-y-4"></div>
+            </div>
+        </div>
+
+        <div id="emailComposerModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[71] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg modal-content overflow-hidden">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <div>
+                        <h3 id="emailComposerTitle" class="text-lg font-bold app-text-primary" data-i18n="emailBot.composeTitle">Send Email</h3>
+                        <p class="text-sm app-text-muted" data-i18n="emailBot.composeSubtitle">Write and send an email through @email.</p>
+                    </div>
+                    <button id="closeEmailComposerButton" class="text-gray-500 hover:text-gray-700 text-xl leading-none" title="Close" data-i18n-title="common.close">&times;</button>
+                </div>
+                <div class="p-4 space-y-4 max-h-[72vh] overflow-y-auto custom-scrollbar">
+                    <div class="space-y-2">
+                        <label for="emailComposeTargetInput" class="text-sm font-semibold app-text-primary" data-i18n="emailBot.targetAddress">Target Email Address</label>
+                        <input id="emailComposeTargetInput" type="email" class="w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="name@example.com" data-i18n-placeholder="emailBot.targetPlaceholder">
+                    </div>
+                    <div class="space-y-2">
+                        <label for="emailComposeSubjectInput" class="text-sm font-semibold app-text-primary" data-i18n="emailBot.subject">Title</label>
+                        <input id="emailComposeSubjectInput" type="text" class="w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Subject" data-i18n-placeholder="emailBot.subjectPlaceholder">
+                    </div>
+                    <div class="space-y-2">
+                        <label for="emailComposeBodyInput" class="text-sm font-semibold app-text-primary" data-i18n="emailBot.body">Body</label>
+                        <textarea id="emailComposeBodyInput" rows="8" class="w-full rounded-xl border px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y" placeholder="Write your email..." data-i18n-placeholder="emailBot.bodyPlaceholder"></textarea>
+                    </div>
+                </div>
+                <div class="p-4 border-t flex items-center justify-end gap-3">
+                    <button id="cancelEmailComposerButton" type="button" class="px-4 py-2 rounded-lg btn-neutral interactive-pop" data-i18n="common.cancel">Cancel</button>
+                    <button id="sendEmailComposerButton" type="button" class="px-4 py-2 rounded-lg btn-accent interactive-pop" data-i18n="emailBot.send">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="emailAddressModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[71] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md modal-content overflow-hidden">
+                <div class="p-4 border-b flex items-center justify-between gap-3">
+                    <div>
+                        <h3 id="emailAddressModalTitle" class="text-lg font-bold app-text-primary" data-i18n="emailBot.createAddressTitle">Create Email Address</h3>
+                        <p class="text-sm app-text-muted" data-i18n="emailBot.createAddressSubtitle">Choose the name before @mail.bargmy.ir.</p>
+                    </div>
+                    <button id="closeEmailAddressButton" class="text-gray-500 hover:text-gray-700 text-xl leading-none" title="Close" data-i18n-title="common.close">&times;</button>
+                </div>
+                <div class="p-4 space-y-4">
+                    <div class="space-y-2">
+                        <label for="emailAddressLocalPartInput" class="text-sm font-semibold app-text-primary" data-i18n="emailBot.localPart">Email Name</label>
+                        <div class="flex items-center rounded-xl border overflow-hidden">
+                            <input id="emailAddressLocalPartInput" type="text" class="min-w-0 flex-1 px-4 py-3 focus:outline-none" placeholder="myname" data-i18n-placeholder="emailBot.localPartPlaceholder" spellcheck="false" autocomplete="off">
+                            <span id="emailAddressDomainText" class="px-4 py-3 border-l bg-gray-50 text-sm app-text-muted">@mail.bargmy.ir</span>
+                        </div>
+                        <p class="text-xs app-text-muted" data-i18n="emailBot.localPartRules">Use lowercase letters, numbers, dot, underscore, or hyphen.</p>
+                    </div>
+                </div>
+                <div class="p-4 border-t flex items-center justify-end gap-3">
+                    <button id="cancelEmailAddressButton" type="button" class="px-4 py-2 rounded-lg btn-neutral interactive-pop" data-i18n="common.cancel">Cancel</button>
+                    <button id="createEmailAddressButton" type="button" class="px-4 py-2 rounded-lg btn-accent interactive-pop" data-i18n="emailBot.createAddressAction">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="emailViewerModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[72] p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-5xl h-[86vh] max-h-[760px] modal-content overflow-hidden flex flex-col">
+                <div class="p-4 border-b flex flex-wrap items-center justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <h3 id="emailViewerTitle" class="text-lg font-bold app-text-primary" data-i18n="emailBot.viewerTitle">Email</h3>
+                        <p id="emailViewerMeta" class="text-sm app-text-muted truncate"></p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="emailViewerDeleteButton" type="button" class="px-3 py-2 rounded-lg btn-neutral interactive-pop" data-i18n="emailBot.deleteMail">Delete this Mail</button>
+                        <button id="emailViewerReplyButton" type="button" class="px-3 py-2 rounded-lg btn-accent interactive-pop" data-i18n="emailBot.reply">Reply</button>
+                        <button id="emailViewerBlockButton" type="button" class="px-3 py-2 rounded-lg btn-neutral interactive-pop" data-i18n="emailBot.block">Block</button>
+                        <button id="closeEmailViewerButton" class="text-gray-500 hover:text-gray-700 text-xl leading-none p-2" title="Close" data-i18n-title="common.close">&times;</button>
+                    </div>
+                </div>
+                <div class="flex-1 min-h-0 bg-gray-50">
+                    <iframe id="emailViewerFrame" class="w-full h-full border-0 hidden" title="Email Viewer" sandbox="allow-same-origin"></iframe>
+                    <div id="emailViewerTextWrap" class="hidden h-full overflow-y-auto custom-scrollbar p-4">
+                        <div id="emailViewerTextContent" class="whitespace-pre-wrap break-words rounded-2xl bg-white p-4 shadow-sm app-text-primary"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- MODIFIED: Generic Error Modal -->
         <div id="errorModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[70] p-4">
             <div class="bg-white rounded-lg shadow-xl w-full max-w-sm modal-content text-center p-6 relative">
@@ -1002,6 +1424,12 @@
                 <h3 id="errorModalTitle" class="text-xl font-bold mb-2" data-i18n="error.title">Error</h3>
                 <p id="errorModalMessage" class="text-gray-600 mb-6" data-i18n="error.unexpected">An unexpected error occurred.</p>
                 <button id="closeErrorModalButton" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg interactive-pop" data-i18n="common.close">Close</button>
+            </div>
+        </div>
+
+        <div id="captchaModal" class="hidden fixed inset-0 modal-bg items-center justify-center z-[74] p-3">
+            <div class="bg-white rounded-3xl shadow-xl w-full max-w-md sm:max-w-lg h-[72vh] max-h-[560px] modal-content overflow-hidden" data-stop-propagation="true">
+                <iframe id="captchaFrame" title="Puzzle Captcha" class="w-full h-full border-0" src="about:blank"></iframe>
             </div>
         </div>
 
@@ -1058,24 +1486,14 @@
     </div>
 
     <script src="static/vendor/dompurify.min.js"></script>
-    <script src="static/js/code-highlight-hardened.js"></script>
-    <script src="static/js/app-push.js?v=20260406_13"></script>
+    <script src="static/js/code-highlight-hardened.js?v=20260409_2"></script>
+    <script src="static/js/app-push.js?v=20260408_14"></script>
     <script src="static/js/app-audio.js?v=20260404_3"></script>
     <script src="static/js/app-voice.js?v=20260405_4"></script>
     <script src="static/vendor/tgstogif/pako.min.js"></script>
     <script src="static/vendor/tgstogif/lottie.min.js"></script>
     <script src="static/js/livekit-client.umd.min.js"></script>
-    <script src="static/js/app-voicechat.js?v=20260406_12"></script>
-<script type="module" src="static/js/app-core.js?v=20260406_186"></script>
+    <script src="static/js/app-voicechat.js?v=20260413_5"></script>
+    <script type="module" src="static/js/app-core.js?v=20260413_5"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-

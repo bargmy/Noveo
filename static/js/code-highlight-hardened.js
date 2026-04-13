@@ -64,13 +64,20 @@ const CodeHighlighter = {
             return highlighted;
         }
 
-        // Process in order: comments -> strings -> keywords -> functions -> numbers
+        const protectedTokens = [];
+        const protect = (value, className) => {
+            const token = `@@CODETOKEN_${protectedTokens.length}@@`;
+            protectedTokens.push({ token, html: `<span class="${className}">${value}</span>` });
+            return token;
+        };
+
+        // Protect comments and strings first so later regexes do not highlight inside injected span markup.
         if (lang.comments) {
-            highlighted = highlighted.replace(lang.comments, '<span class="code-comment">$&</span>');
+            highlighted = highlighted.replace(lang.comments, match => protect(match, 'code-comment'));
         }
 
         if (lang.strings) {
-            highlighted = highlighted.replace(lang.strings, '<span class="code-string">$&</span>');
+            highlighted = highlighted.replace(lang.strings, match => protect(match, 'code-string'));
         }
 
         if (lang.keywords) {
@@ -137,6 +144,10 @@ const CodeHighlighter = {
         if (lang.booleans) {
             highlighted = highlighted.replace(lang.booleans, '<span class="code-keyword">$&</span>');
         }
+
+        protectedTokens.forEach((entry) => {
+            highlighted = highlighted.replace(entry.token, entry.html);
+        });
 
         return highlighted;
     },

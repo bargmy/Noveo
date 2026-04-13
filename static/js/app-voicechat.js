@@ -19,6 +19,7 @@
         screenShareElement: null,
         screenShareElementTrack: null,
         currentScreenShareOwnerId: null,
+        selectedScreenShareOwnerId: null,
         currentChatId: null,
         connectingChatId: null,
         currentRoomName: "",
@@ -106,6 +107,10 @@
 
     function getCurrentChat() {
         return getConfig().getCurrentChat ? getConfig().getCurrentChat() : null;
+    }
+
+    function getPreferredScreenShareQuality() {
+        return getConfig().getPreferredScreenShareQuality ? getConfig().getPreferredScreenShareQuality() : "480p";
     }
 
     function notifyState(partial) {
@@ -218,7 +223,20 @@
             return;
         }
         var sdk = await ensureLiveKitClient();
-        voiceState.localTrack = await createLocalTrack(sdk);
+        try {
+            voiceState.localTrack = await createLocalTrack(sdk);
+            voiceState.localTrackError = null;
+        } catch (error) {
+            voiceState.localTrack = null;
+            voiceState.localTrackError = error;
+            voiceState.isMuted = true;
+            notifyState({ isMuted: true });
+            showError(
+                "Microphone Unavailable",
+                "Joined the call without microphone access. " + (error && error.message ? error.message : "Microphone access is unavailable.")
+            );
+            return;
+        }
         if (voiceState.room.localParticipant && voiceState.localTrack) {
             await voiceState.room.localParticipant.publishTrack(voiceState.localTrack);
         }
@@ -319,18 +337,38 @@
         var localVideoTrack = voiceState.localScreenTracks.find(function (track) {
             return track && track.kind === "video";
         });
+        var available = [];
         if (localVideoTrack && currentUser && currentUser.userId) {
-            return { participantId: String(currentUser.userId), track: localVideoTrack, isLocal: true };
+            available.push({ participantId: String(currentUser.userId), track: localVideoTrack, isLocal: true });
         }
-        var remoteEntry = voiceState.remoteScreenShareTracks.entries().next();
-        if (!remoteEntry.done && remoteEntry.value) {
-            return { participantId: String(remoteEntry.value[0]), track: remoteEntry.value[1], isLocal: false };
-        }
-        return null;
+        voiceState.remoteScreenShareTracks.forEach(function (track, participantId) {
+            if (!track) return;
+            available.push({ participantId: String(participantId), track: track, isLocal: false });
+        });
+        if (!available.length) return null;
+        var preferredId = String(voiceState.selectedScreenShareOwnerId || "");
+        var preferred = available.find(function (entry) { return entry.participantId === preferredId; });
+        if (preferred) return preferred;
+        return available[0];
     }
 
     function syncScreenShareState() {
         var selection = getCurrentScreenShareSelection();
+        var availableOwnerIds = [];
+        var currentUser = getCurrentUser();
+        var localVideoTrack = voiceState.localScreenTracks.find(function (track) {
+            return track && track.kind === "video";
+        });
+        if (localVideoTrack && currentUser && currentUser.userId) {
+            availableOwnerIds.push(String(currentUser.userId));
+        }
+        voiceState.remoteScreenShareTracks.forEach(function (_track, participantId) {
+            availableOwnerIds.push(String(participantId));
+        });
+        availableOwnerIds = Array.from(new Set(availableOwnerIds.filter(Boolean)));
+        if (voiceState.selectedScreenShareOwnerId && availableOwnerIds.indexOf(String(voiceState.selectedScreenShareOwnerId)) === -1) {
+            voiceState.selectedScreenShareOwnerId = null;
+        }
         cleanupScreenShareElement();
         if (selection && selection.track && selection.track.attach) {
             var element = selection.track.attach();
@@ -340,14 +378,17 @@
             voiceState.screenShareElement = element;
             voiceState.screenShareElementTrack = selection.track;
             voiceState.currentScreenShareOwnerId = selection.participantId;
+            voiceState.selectedScreenShareOwnerId = selection.participantId;
         } else {
             voiceState.currentScreenShareOwnerId = null;
+            voiceState.selectedScreenShareOwnerId = null;
         }
         if (voiceState.screenShareContainer) {
             mountScreenShareStage(voiceState.screenShareContainer);
         }
         notifyState({
             currentScreenShareOwnerId: voiceState.currentScreenShareOwnerId,
+            availableScreenShareOwnerIds: availableOwnerIds,
             isLocalScreenSharing: voiceState.localScreenTracks.length > 0
         });
         if (voiceState.currentChatId) {
@@ -383,6 +424,14 @@
         syncScreenShareState();
     }
 
+    function setScreenShareOwner(participantId) {
+        var normalized = String(participantId || "").trim();
+        if (!normalized) return getState();
+        voiceState.selectedScreenShareOwnerId = normalized;
+        syncScreenShareState();
+        return getState();
+    }
+
     function forceStopScreenShareTracks() {
         if (!voiceState.localScreenTracks.length) {
             cleanupScreenShareElement();
@@ -408,6 +457,11 @@
         if (voiceState.localScreenTracks.length) {
             return getState();
         }
+        var preferredQuality = String(getPreferredScreenShareQuality() || "480p").toLowerCase();
+        var use720p = preferredQuality === "720p";
+        var targetWidth = use720p ? 1280 : 854;
+        var targetHeight = use720p ? 720 : 480;
+        var targetBitrate = use720p ? 4200000 : 2500000;
         var sdk = await ensureLiveKitClient();
         var screenTracks = await sdk.createLocalScreenTracks({ audio: true });
         var videoTrack = screenTracks.find(function (track) {
@@ -419,8 +473,8 @@
         if (videoTrack.mediaStreamTrack && typeof videoTrack.mediaStreamTrack.applyConstraints === "function") {
             try {
                 await videoTrack.mediaStreamTrack.applyConstraints({
-                    width: { max: 854, ideal: 854 },
-                    height: { max: 480, ideal: 480 },
+                    width: { max: targetWidth, ideal: targetWidth },
+                    height: { max: targetHeight, ideal: targetHeight },
                     frameRate: { max: 15, ideal: 15 }
                 });
             } catch (_) {}
@@ -444,7 +498,7 @@
                     videoCodec: "h264",
                     degradationPreference: "maintain-framerate",
                     screenShareEncoding: {
-                        maxBitrate: 2500000,
+                        maxBitrate: targetBitrate,
                         maxFramerate: 15
                     }
                 };
@@ -603,6 +657,7 @@
             forceStopScreenShareTracks();
             voiceState.remoteScreenShareTracks.clear();
             voiceState.currentScreenShareOwnerId = null;
+            voiceState.selectedScreenShareOwnerId = null;
             voiceState.room = null;
             voiceState.participantMap.clear();
             highlightActiveSpeakers([]);
@@ -739,6 +794,7 @@
         voiceState.room = null;
         voiceState.remoteScreenShareTracks.clear();
         voiceState.currentScreenShareOwnerId = null;
+        voiceState.selectedScreenShareOwnerId = null;
         voiceState.participantMap.clear();
         highlightActiveSpeakers([]);
         if (chatId) {
@@ -842,6 +898,7 @@
         voiceState.remoteScreenShareTracks.clear();
         forceStopScreenShareTracks();
         voiceState.currentScreenShareOwnerId = null;
+        voiceState.selectedScreenShareOwnerId = null;
         voiceState.participantMap.clear();
         highlightActiveSpeakers([]);
         voiceState.isMuted = false;
@@ -855,6 +912,17 @@
     }
 
     function getState() {
+        var availableScreenShareOwnerIds = [];
+        var currentUser = getCurrentUser();
+        var localVideoTrack = voiceState.localScreenTracks.find(function (track) {
+            return track && track.kind === "video";
+        });
+        if (localVideoTrack && currentUser && currentUser.userId) {
+            availableScreenShareOwnerIds.push(String(currentUser.userId));
+        }
+        voiceState.remoteScreenShareTracks.forEach(function (_track, participantId) {
+            availableScreenShareOwnerIds.push(String(participantId));
+        });
         return {
             currentChatId: voiceState.currentChatId,
             connectingChatId: voiceState.connectingChatId,
@@ -862,6 +930,7 @@
             currentCallId: voiceState.currentCallId,
             connectionState: voiceState.connectionState,
             currentScreenShareOwnerId: voiceState.currentScreenShareOwnerId,
+            availableScreenShareOwnerIds: Array.from(new Set(availableScreenShareOwnerIds.filter(Boolean))),
             isLocalScreenSharing: voiceState.localScreenTracks.length > 0,
             isMuted: !!voiceState.isMuted,
             isDeafened: !!voiceState.isDeafened,
@@ -883,6 +952,7 @@
         toggleScreenShare: function () {
             return voiceState.localScreenTracks.length ? stopScreenShare() : startScreenShare();
         },
+        setScreenShareOwner: setScreenShareOwner,
         toggleMute: async function () {
             voiceState.isMuted = !voiceState.isMuted;
             await applyMuteState();
